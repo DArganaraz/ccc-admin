@@ -1,0 +1,62 @@
+# MyConnect: build this repo's Docker image and push it to GHCR.
+# Run by hand from the Actions tab ("Run workflow"). Images are tagged with the
+# short commit hash (use that in ccc-deploy/.env) and with "latest".
+name: MyConnect image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: myconnect-image
+  cancel-in-progress: false
+
+# Production addresses. Baked into the image at build time, so changing one means a rebuild.
+env:
+  API_URL: https://api.connectcity.church
+  SOCKET_URL: wss://api.connectcity.church
+  B1ADMIN_URL: https://admin.connectcity.church
+  B1APP_URL: https://my.connectcity.church
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Short commit hash
+        id: tag
+        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/darganaraz/ccc-admin:${{ steps.tag.outputs.sha }}
+            ghcr.io/darganaraz/ccc-admin:latest
+          labels: org.opencontainers.image.source=https://github.com/DArganaraz/ccc-admin
+          build-args: |
+            REACT_APP_STAGE=custom
+            REACT_APP_API_BASE=${{ env.API_URL }}
+            REACT_APP_CONTENT_ROOT=${{ env.API_URL }}/content
+            REACT_APP_MESSAGING_API_SOCKET=${{ env.SOCKET_URL }}
+            REACT_APP_B1_ROOT=${{ env.B1APP_URL }}
+            REACT_APP_B1ADMIN_ROOT=${{ env.B1ADMIN_URL }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: echo "Built ghcr.io/darganaraz/ccc-admin:${{ steps.tag.outputs.sha }}" >> "$GITHUB_STEP_SUMMARY"
