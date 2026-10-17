@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import { request as pwRequest, type APIRequestContext, type Page } from "@playwright/test";
 import { settingsTest as test, expect } from "./helpers/test-fixtures";
 import { dismissSendInviteIfPresent, confirmDelete, openPersonRow, personDetailsEditButton, SEED_PEOPLE } from "./helpers/fixtures";
 import { login } from "./helpers/auth";
@@ -696,5 +696,223 @@ test.describe("Email template editor merge fields", () => {
     for (let i = 0; i < 5; i++) await page.keyboard.press("ArrowLeft");
     await page.keyboard.press("Backspace");
     await expect(body).toHaveText("Helloworld");
+  });
+});
+
+// ChurchAppsSupport#1241: a church setting limits the app's volunteer signup list to the next week of each plan type.
+test.describe.serial("Volunteer signup next week only", () => {
+  test.describe.configure({ retries: 0 });
+  const API = process.env.API_BASE || "http://localhost:8084";
+  const PLAN_TYPE_NAME = "Next Week Only Spec " + Date.now().toString().slice(-6);
+  let ctx: APIRequestContext;
+  let auth: { headers: { Authorization: string } };
+  let planTypeId: string;
+  const planIds: string[] = [];
+
+  const signupPlanIds = async () => {
+    const res = await ctx.get(`${API}/doing/plans/public/signup/CHU00000001`);
+    return ((await res.json()) as any[]).map((r) => r.plan.id).filter((id: string) => planIds.includes(id));
+  };
+  const deleteSetting = async () => {
+    const settings = await (await ctx.get(`${API}/membership/settings`, auth)).json();
+    const found = (settings || []).find((s: any) => s.keyName === "volunteerSignupNextOnly");
+    if (found?.id) await ctx.delete(`${API}/membership/settings/${found.id}`, auth);
+  };
+
+  test.beforeAll(async () => {
+    ctx = await pwRequest.newContext();
+    const loginRes = await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+    expect(loginRes.ok()).toBeTruthy();
+    const body = await loginRes.json();
+    const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+    auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+    await deleteSetting();
+    const typeRes = await ctx.post(`${API}/doing/planTypes`, { ...auth, data: [{ ministryId: "GRP0000000a", name: PLAN_TYPE_NAME }] });
+    planTypeId = (await typeRes.json())[0].id;
+    const planRes = await ctx.post(`${API}/doing/plans`, {
+      ...auth,
+      data: [
+        { name: "Signup Week One", serviceDate: "2033-04-03", ministryId: "GRP0000000a", planTypeId },
+        { name: "Signup Week Two", serviceDate: "2033-04-10", ministryId: "GRP0000000a", planTypeId }
+      ]
+    });
+    planIds.push(...(await planRes.json()).map((p: any) => p.id));
+    await ctx.post(`${API}/doing/positions`, { ...auth, data: planIds.map((planId) => ({ planId, categoryName: "Band", name: "Greeter", count: 2, allowSelfSignup: true })) });
+  });
+
+  test.afterAll(async () => {
+    await deleteSetting();
+    for (const id of planIds) await ctx.delete(`${API}/doing/plans/${id}`, auth);
+    if (planTypeId) await ctx.delete(`${API}/doing/planTypes/${planTypeId}`, auth);
+    await ctx.dispose();
+  });
+
+  test("turning the setting on limits the public signup list to the next week of each plan type", async ({ page }) => {
+    expect(await signupPlanIds()).toEqual(planIds);
+
+    await page.goto("/settings#volunteer-signup");
+    const section = page.getByTestId("settings-volunteer-signup");
+    await expect(section).toBeVisible({ timeout: 15000 });
+    await expect(section).toContainText("All upcoming weeks");
+    await section.getByTestId("small-button-edit").dispatchEvent("click");
+    await page.getByTestId("volunteer-signup-next-only-switch").locator("input").check();
+    const save = page.waitForResponse((r) => r.url().includes("/settings") && r.request().method() === "POST" && r.status() === 200);
+    await page.getByRole("button", { name: "Save" }).click();
+    await save;
+    await expect(section).toContainText("Only the next week of each plan type", { timeout: 10000 });
+
+    expect(await signupPlanIds()).toEqual([planIds[0]]);
+  });
+
+  test("turning the setting off shows every week again", async ({ page }) => {
+    await page.goto("/settings#volunteer-signup");
+    const section = page.getByTestId("settings-volunteer-signup");
+    await expect(section).toContainText("Only the next week of each plan type", { timeout: 15000 });
+    await section.getByTestId("small-button-edit").dispatchEvent("click");
+    await page.getByTestId("volunteer-signup-next-only-switch").locator("input").uncheck();
+    const del = page.waitForResponse((r) => r.url().includes("/settings/") && r.request().method() === "DELETE");
+    await page.getByRole("button", { name: "Save" }).click();
+    await del;
+    await expect(section).toContainText("All upcoming weeks", { timeout: 10000 });
+
+    expect(await signupPlanIds()).toEqual(planIds);
+  });
+});
+
+// ChurchAppsSupport#1247: a church setting keeps each person's giving off their record until someone clicks Show giving.
+test.describe.serial("Giving privacy on person records", () => {
+  test.describe.configure({ retries: 0 });
+  const API = process.env.API_BASE || "http://localhost:8084";
+  let ctx: APIRequestContext;
+  let auth: { headers: { Authorization: string } };
+
+  const deleteSetting = async () => {
+    const settings = await (await ctx.get(`${API}/membership/settings`, auth)).json();
+    const found = (settings || []).find((s: any) => s.keyName === "hideGivingOnPerson");
+    if (found?.id) await ctx.delete(`${API}/membership/settings/${found.id}`, auth);
+  };
+  const openDemoUser = async (page: Page) => {
+    await page.goto("/people");
+    await openPersonRow(page, SEED_PEOPLE.DEMO);
+    const section = page.getByTestId("person-giving-section");
+    await expect(section).toBeVisible({ timeout: 15000 });
+    return section;
+  };
+
+  test.beforeAll(async () => {
+    ctx = await pwRequest.newContext();
+    const loginRes = await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+    expect(loginRes.ok()).toBeTruthy();
+    const body = await loginRes.json();
+    const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+    auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+    await deleteSetting();
+  });
+
+  test.afterAll(async () => {
+    await deleteSetting();
+    await ctx.dispose();
+  });
+
+  test("giving shows on the person record by default", async ({ page }) => {
+    const section = await openDemoUser(page);
+    await expect(section.getByTestId("person-giving-all")).toBeVisible({ timeout: 10000 });
+    await expect(section.getByTestId("person-giving-show")).toHaveCount(0);
+  });
+
+  test("turning the setting on hides giving until Show giving is clicked", async ({ page }) => {
+    await page.goto("/settings#giving-privacy");
+    const settings = page.getByTestId("settings-giving-privacy");
+    await expect(settings).toBeVisible({ timeout: 15000 });
+    await expect(settings).toContainText("Shown");
+    await settings.getByTestId("small-button-edit").dispatchEvent("click");
+    await page.getByTestId("giving-privacy-hide-switch").locator("input").check();
+    const save = page.waitForResponse((r) => r.url().includes("/settings") && r.request().method() === "POST" && r.status() === 200);
+    await page.getByRole("button", { name: "Save" }).click();
+    await save;
+    await expect(settings).toContainText("Hidden until clicked", { timeout: 10000 });
+
+    const donationRequests: string[] = [];
+    page.on("request", (r) => { if (r.url().includes("/donations?personId=")) donationRequests.push(r.url()); });
+    const section = await openDemoUser(page);
+    await expect(section).toContainText("Giving is hidden on person records.");
+    await expect(section.getByTestId("person-giving-all")).toHaveCount(0);
+    await expect(section).not.toContainText(/\$\s?\d/);
+    expect(donationRequests).toEqual([]);
+
+    await section.getByTestId("person-giving-show").click();
+    await expect(section.getByTestId("person-giving-all")).toBeVisible({ timeout: 10000 });
+    await expect(section).toContainText(/\$\s?\d|No (household )?gifts recorded/);
+    await expect(section.getByTestId("person-giving-show")).toHaveCount(0);
+  });
+
+  test("turning the setting off shows giving right away again", async ({ page }) => {
+    await page.goto("/settings#giving-privacy");
+    const settings = page.getByTestId("settings-giving-privacy");
+    await expect(settings).toContainText("Hidden until clicked", { timeout: 15000 });
+    await settings.getByTestId("small-button-edit").dispatchEvent("click");
+    await page.getByTestId("giving-privacy-hide-switch").locator("input").uncheck();
+    const del = page.waitForResponse((r) => r.url().includes("/settings/") && r.request().method() === "DELETE");
+    await page.getByRole("button", { name: "Save" }).click();
+    await del;
+    await expect(settings).toContainText("Shown", { timeout: 10000 });
+
+    const section = await openDemoUser(page);
+    await expect(section.getByTestId("person-giving-all")).toBeVisible({ timeout: 10000 });
+  });
+});
+
+// PR 664: Hungary (hu-HU) is selectable as a region and formats the sample date the Hungarian way.
+test.describe("Region list includes Hungary", () => {
+  test.describe.configure({ retries: 0 });
+
+  const SAMPLE_DATE: [number, number, number] = [2026, 8, 28];
+  // Same Intl calls as regionName / regionSample in RegionSettingsEdit, evaluated in the browser.
+  const regionInfo = (page: Page, region: string) => page.evaluate(({ region, d }) => {
+    const date = new Date(d[0], d[1], d[2]);
+    const name = new Intl.DisplayNames([navigator.language || "en", "en"], { type: "language", languageDisplay: "standard" }).of(region) || region;
+    const sample = new Intl.DateTimeFormat(region, { dateStyle: "medium" }).format(date) + " · " + new Intl.DateTimeFormat(region, { year: "numeric", month: "numeric", day: "numeric" }).format(date);
+    return { name, sample };
+  }, { region, d: SAMPLE_DATE });
+
+  const chooseRegion = async (page: Page, region: string) => {
+    await page.goto("/settings#region");
+    await expect(page.locator('[data-testid="settings-section-region"]')).toBeVisible({ timeout: 15000 });
+    await page.locator('[data-testid="settings-section-region"]').click();
+    const section = page.locator('[data-testid="settings-region"]');
+    await section.locator('[data-testid="small-button-edit"]').dispatchEvent("click");
+    await section.locator('[data-testid="region-select"]').click();
+    const option = page.locator(`[data-testid="region-option-${region}"]`);
+    await expect(option).toBeVisible({ timeout: 10000 });
+    await option.click();
+    await section.locator("button").getByText("Save").click();
+    await expect(page.locator('[data-testid="region-select"]')).toHaveCount(0, { timeout: 10000 });
+  };
+
+  test.afterAll(async ({ browser }) => {
+    const page = await browser.newPage();
+    try {
+      await login(page);
+      await chooseRegion(page, "en-US");
+    } finally {
+      await page.close();
+    }
+  });
+
+  test("choosing Hungary shows its name and a Hungarian sample date, and switching back restores en-US", async ({ page }) => {
+    const hu = await regionInfo(page, "hu-HU");
+    const us = await regionInfo(page, "en-US");
+    expect(hu.sample).not.toBe(us.sample);
+    const section = page.locator('[data-testid="settings-region"]');
+    try {
+      await chooseRegion(page, "hu-HU");
+      await expect(section).toContainText(hu.name, { timeout: 10000 });
+      await expect(section).toContainText(hu.sample);
+      await expect(section).not.toContainText(us.sample);
+    } finally {
+      await chooseRegion(page, "en-US");
+    }
+    await expect(section).toContainText(us.sample, { timeout: 10000 });
+    await expect(section).not.toContainText(hu.sample);
   });
 });

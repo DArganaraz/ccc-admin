@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import { type Locator, type Page, test as plainTest } from "@playwright/test";
 import { loggedInTest as test, expect } from "./helpers/test-fixtures";
 import { navigateToCalendars } from "./helpers/navigation";
 import { login } from "./helpers/auth";
@@ -323,6 +323,38 @@ test.describe.serial("Editing an existing calendar event", () => {
     await page.locator('[data-testid="calendar-event-cancel-button"]').click();
   });
 
+  test("adds an event photo from the gallery and sees it again on reopen", async () => {
+    const photo = "content/CHU00000001/gallery/1.78/zacchaeus-event.jpg";
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+    await page.route("**/content/gallery/1.78", (route) => route.fulfill({ json: { images: [photo] } }));
+    await page.route("**/zacchaeus-event.jpg", (route) => route.fulfill({ contentType: "image/png", body: png }));
+
+    const block = await findEventBlock(page, EDIT_EVENT_TITLE);
+    await block.click();
+    await page.locator('[data-testid="calendar-event-edit-button"]').click();
+    await expect(page.locator('[data-testid="new-event-title-input"] input')).toHaveValue(EDIT_EVENT_TITLE, { timeout: 10000 });
+    await expect(page.locator('[data-testid="new-event-description-input"]')).toContainText("Bold, lists, and links");
+
+    await page.locator('[data-testid="new-event-photo-button"]').click();
+    await page.locator('[data-testid="select-image"]').first().click();
+    await expect(page.locator('[data-testid="new-event-photo"] img')).toHaveAttribute("src", /zacchaeus-event\.jpg$/);
+
+    const eventPost = page.waitForResponse((r) => r.url().includes("/content/events") && r.request().method() === "POST" && r.ok(), { timeout: 15000 });
+    await page.locator('[data-testid="new-event-save-button"]').click();
+    await confirmDelete(page);
+    const saved = await (await eventPost).json();
+    expect(saved[0]?.photoUrl, "saved photoUrl").toMatch(/zacchaeus-event\.jpg$/);
+    await expect(page.locator('[data-testid="new-event-save-button"]')).toHaveCount(0, { timeout: 15000 });
+
+    const reopened = await findEventBlock(page, EDIT_EVENT_TITLE);
+    await reopened.click();
+    await page.locator('[data-testid="calendar-event-edit-button"]').click();
+    await expect(page.locator('[data-testid="new-event-photo"] img')).toHaveAttribute("src", /zacchaeus-event\.jpg$/, { timeout: 10000 });
+    await page.locator('[data-testid="new-event-cancel-button"]').click();
+    await page.locator('[data-testid="calendar-event-cancel-button"]').click();
+    await page.unroute("**/content/gallery/1.78");
+  });
+
   test("warns that saving a recurring event updates the whole series, then persists the edit", async () => {
     const block = await findEventBlock(page, EDIT_EVENT_TITLE);
     await block.click();
@@ -397,5 +429,28 @@ test.describe.serial("Private events on a curated calendar", () => {
 
     await page.reload();
     await expect(await findEventBlock(page, PRIVATE_EVENT_TITLE)).toBeVisible({ timeout: 15000 });
+  });
+});
+
+const printLuminanceOf = async (el: Locator) => {
+  const color = await el.evaluate((node) => getComputedStyle(node).color);
+  const [r, g, b] = (color.match(/\d+/g) || []).map(Number);
+  return { color, luminance: (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 };
+};
+
+// Issue 1266: in dark mode the calendar printout kept the dark theme's light text.
+plainTest.describe("Calendar print colors in dark mode", () => {
+  plainTest.describe.configure({ retries: 0 });
+
+  plainTest("prints calendar headings in a dark color", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("b1admin-theme-mode", "dark"));
+    await login(page);
+    await page.emulateMedia({ media: "print" });
+    await page.goto("/calendars/CAL00000001");
+
+    const label = page.locator(".print-area .rbc-toolbar-label");
+    await expect(label).toBeVisible({ timeout: 15000 });
+    const { color, luminance } = await printLuminanceOf(label);
+    expect(luminance, "text color " + color).toBeLessThan(0.4);
   });
 });

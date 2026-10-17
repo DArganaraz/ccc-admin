@@ -1,5 +1,5 @@
 import fs from "fs";
-import { type Page, type APIRequestContext, request } from "@playwright/test";
+import { type Page, type APIRequestContext, type Locator, request, test as plainTest } from "@playwright/test";
 import { donationsTest as test, expect } from "./helpers/test-fixtures";
 import { fillFundForm } from "./helpers/donations";
 import { login } from "./helpers/auth";
@@ -654,6 +654,73 @@ test.describe("Donation refunds", () => {
   });
 });
 
+// In-Kind gifts: every donation form offers In-Kind and labels its detail box "Item".
+const IN_KIND_BATCH_NAME = "Zacchaeus In-Kind Batch";
+
+test.describe("In-kind donations", () => {
+  test.describe.configure({ retries: 0 });
+  let batchId: string;
+  let donationId: string;
+
+  test.beforeAll(async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    const batchRes = await ctx.post(`${API_BASE}/giving/donationbatches`, { ...auth, data: [{ name: IN_KIND_BATCH_NAME, batchDate: "2025-11-03" }] });
+    batchId = (await batchRes.json())[0].id;
+    const donationRes = await ctx.post(`${API_BASE}/giving/donations`, {
+      ...auth,
+      data: [{ batchId, donationDate: "2025-11-03", amount: 5000, method: "In-Kind", methodDetails: "2014 Honda Civic", status: "complete" }]
+    });
+    donationId = (await donationRes.json())[0].id;
+    await ctx.dispose();
+  });
+
+  test.afterAll(async () => {
+    if (!batchId) return;
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    await ctx.delete(`${API_BASE}/giving/donationbatches/${batchId}`, auth);
+    await ctx.dispose();
+  });
+
+  test("full donation editor keeps an in-kind gift's method and item", async ({ page }) => {
+    await page.goto(`/donations/batches/${batchId}`);
+    await page.getByTestId("donation-row-" + donationId).getByRole("button", { name: "Edit" }).click();
+
+    const box = page.locator("#donationBox");
+    await expect(box.getByTestId("payment-method-select")).toContainText("In-Kind", { timeout: 10000 });
+    await expect(box.getByLabel("Item")).toHaveValue("2014 Honda Civic");
+  });
+
+  test("batch quick entry labels the in-kind detail Item", async ({ page }) => {
+    await page.goto(`/donations/batches/${batchId}`);
+    await page.getByTestId("bulk-donation-anonymous").click();
+
+    await page.locator('[data-testid="bulk-donation-method"] [role="combobox"]').click();
+    await page.locator('[data-value="In-Kind"]').click();
+
+    const details = page.getByTestId("bulk-donation-method-details").getByRole("textbox");
+    await expect(details).toBeVisible();
+    await expect(details).toHaveAccessibleName("Item");
+  });
+
+  test("Log a gift shows an Item box for in-kind and no detail box for cash", async ({ page }) => {
+    await page.goto(`/people/${DONALD_CLARK_ID}`);
+    await page.getByTestId("person-log-gift").first().click();
+
+    const form = page.getByTestId("log-gift-form");
+    await form.getByRole("combobox", { name: "Method" }).click();
+    await page.getByRole("option", { name: "In-Kind" }).click();
+    await expect(form.getByRole("textbox", { name: "Item" })).toBeVisible();
+
+    await form.getByRole("combobox", { name: "Method" }).click();
+    await page.getByRole("option", { name: "Cash" }).click();
+    for (const name of ["Item", "Check #", "Last 4 digits"]) {
+      await expect(form.getByRole("textbox", { name, exact: true })).toHaveCount(0);
+    }
+  });
+});
+
 // Mixed-currency totals: gifts keep their own currency, but every dashboard total is converted into the
 // church currency (USD on the demo church) by the Api with its own cached exchange rates. The expected
 // figure is rebuilt here from the Api's read-only rate table, so the spec follows the live rate.
@@ -808,5 +875,43 @@ test.describe("Donation batch print", () => {
     await expect(documents.last()).toContainText("March 30, 2025 Batch");
     await expect(documents.first()).toContainText(/Batch Total\s*\$\s*1,900\.00/);
     await expect(page.getByText("April 6, 2025 Batch")).toHaveCount(0);
+  });
+});
+
+// ChurchAppsSupport#1252: labeling donors is one names-and-photos call, not a full profile fetch.
+test("fund page loads every donor name in one call", async ({ page }) => {
+  await page.goto("/donations/funds/FUN00000001");
+  await page.locator('[data-cy="start-date"] input').fill("2025-03-01");
+  await page.locator('[data-cy="end-date"] input').fill("2025-03-31");
+  const namesCall = page.waitForRequest((req) => req.method() === "POST" && req.url().includes("/people/names"), { timeout: 15000 });
+  await page.locator("button").filter({ hasText: /^Filter$/ }).click();
+  const req = await namesCall;
+  const body = req.postDataJSON() as { peopleIds?: string[] };
+  expect(body.peopleIds?.length).toBeGreaterThan(1);
+  await expect(page.getByRole("link", { name: "John Smith" }).first()).toBeVisible();
+});
+
+const printLuminanceOf = async (el: Locator) => {
+  const color = await el.evaluate((node) => getComputedStyle(node).color);
+  const [r, g, b] = (color.match(/\d+/g) || []).map(Number);
+  return { color, luminance: (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 };
+};
+
+// Issue 1266: in dark mode the batch printout inherits the dark theme's light text,
+// and the browser drops the dark background on paper, so the page prints near-white.
+plainTest.describe("Print colors in dark mode", () => {
+  plainTest.describe.configure({ retries: 0 });
+
+  plainTest("prints batch text in a dark color", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("b1admin-theme-mode", "dark"));
+    await login(page);
+    await page.emulateMedia({ media: "print" });
+    await page.goto("/donations/batches/print-all?start=2000-01-01&end=2100-01-01");
+
+    const total = page.locator('[data-testid="batch-print-document"]').first().getByText("Batch Total", { exact: true });
+    await expect(total).toBeVisible({ timeout: 15000 });
+
+    const { color, luminance } = await printLuminanceOf(total);
+    expect(luminance, "text color " + color).toBeLessThan(0.4);
   });
 });

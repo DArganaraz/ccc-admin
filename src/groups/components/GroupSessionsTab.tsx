@@ -1,4 +1,5 @@
 import React from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { type GroupInterface, type PersonInterface, type SessionInterface } from "@churchapps/helpers";
 import { PersonHelper, UserHelper, Permissions } from "@churchapps/apphelper";
@@ -17,6 +18,7 @@ interface Props {
 }
 
 export const GroupSessionsTab = (props: Props) => {
+  const [searchParams] = useSearchParams();
   const [addedPerson, setAddedPerson] = React.useState<PersonInterface | undefined>({} as PersonInterface);
   const [addedSession, setAddedSession] = React.useState({} as SessionInterface);
   const [addSessionVisible, setAddSessionVisible] = React.useState(false);
@@ -38,6 +40,7 @@ export const GroupSessionsTab = (props: Props) => {
 
   const handleSessionUpdated = React.useCallback((session: SessionInterface | null) => {
     setAddedSession(session ? ({ ...session, _updateTimestamp: Date.now() } as SessionInterface) : ({} as SessionInterface));
+    if (session) setSelectedSession((prev) => (prev?.id === session.id ? { ...prev, ...session } : prev));
     setEditSessionVisible(false);
     setEditingSession(null);
   }, []);
@@ -66,6 +69,7 @@ export const GroupSessionsTab = (props: Props) => {
           onEditSession={handleSessionEdit}
           onAddSession={handleShowAddSession}
           addedSession={addedSession}
+          initialSessionId={searchParams.get("sessionId") || undefined}
         />
       </Grid>
       <Grid size={{ xs: 12, md: 7 }}>
@@ -81,7 +85,7 @@ export const GroupSessionsTab = (props: Props) => {
           />
           {!addSessionVisible && !editSessionVisible && UserHelper.checkAccess(Permissions.attendanceApi.attendance.edit) && (
             <AddBar data-testid="session-person-add" sx={{ mt: 0 }}>
-              <PersonAddAdvanced getPhotoUrl={PersonHelper.getPhotoUrl} addFunction={addPerson} showCreatePersonOnNotFound />
+              <PersonAddAdvanced getPhotoUrl={PersonHelper.getPhotoUrl} addFunction={addPerson} onCreate={addPerson} showCreatePersonOnNotFound />
             </AddBar>
           )}
         </Stack>

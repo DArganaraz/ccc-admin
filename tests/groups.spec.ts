@@ -31,6 +31,8 @@ async function openSessionOn(page: Page, date: string) {
 async function selectSession(page: Page, date: string) {
   const [y, m, d] = date.split("-");
   const label = `${m}/${d}/${y}`;
+  // The list stays on the year it defaulted to; a new session in another year needs its pill.
+  await page.getByTestId("session-year-pills").getByRole("button", { name: y, exact: true }).click({ timeout: 10000 });
   const item = page.getByRole("button").filter({ hasText: label }).first();
   await item.click({ timeout: 10000 });
   await expect(item).toContainText("Active", { timeout: 10000 });
@@ -361,6 +363,20 @@ test.describe.serial("Group Management", () => {
       await expect(sessionCard).toHaveCount(1, { timeout: 10000 });
     });
 
+    test("saves session notes as markdown and shows them rendered", async () => {
+      const date = "2025-09-03";
+      await openSeedGroup(page, SESSION_GROUP);
+      await page.getByTestId("group-all-sessions").click();
+      await page.locator("button").getByText("New").first().click();
+      const box = page.locator('[data-cy="add-session-box"]');
+      await box.locator('[data-testid="session-date-input"] input').fill(date);
+      await box.locator(".editor-input[contenteditable='true']").first().click();
+      await page.keyboard.type("Read **Romans 9** this week");
+      await box.getByRole("button", { name: "Save", exact: true }).click();
+      await selectSession(page, date);
+      await expect(page.locator('[data-testid="session-notes"] strong')).toHaveText("Romans 9", { timeout: 10000 });
+    });
+
     test("adds a session for every group in the service time at once, without duplicates", async () => {
       const date = "2027-02-17";
       const before = await wednesdaySessionCounts(date);
@@ -373,8 +389,9 @@ test.describe.serial("Group Management", () => {
       await expect.poll(() => wednesdaySessionCounts(date)).toEqual(afterFirst.map((c, i) => (i === 2 ? c + 1 : c)));
     });
 
-    test("lists which groups at the service time still need attendance", async () => {
+    test("lists which groups at the service time still need attendance and opens their same-date session", async () => {
       // Wednesday Prayer Service has attendance on 3/11/2026; the other four Wednesday classes have none.
+      // Nursery also gets an empty 3/11/2026 session plus a newer one that it would otherwise open by default.
       const apiBase = process.env.API_BASE || "http://localhost:8084";
       const ctx = await request.newContext();
       const loginRes = await (await ctx.post(`${apiBase}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
@@ -383,6 +400,8 @@ test.describe.serial("Group Management", () => {
       const sRes = await ctx.post(`${apiBase}/attendance/sessions`, { headers, data: [{ groupId: "GRP00000003", serviceTimeId: "SST00000004", sessionDate: "2026-03-11" }] });
       const session = (await sRes.json())[0];
       await ctx.post(`${apiBase}/attendance/visitsessions/log`, { headers, data: { personId: "PER00000001", visitSessions: [{ sessionId: session.id }] } });
+      const nRes = await ctx.post(`${apiBase}/attendance/sessions`, { headers, data: [{ groupId: "GRP00000007", serviceTimeId: "SST00000004", sessionDate: "2026-03-11" }, { groupId: "GRP00000007", serviceTimeId: "SST00000004", sessionDate: "2026-09-30" }] });
+      const nurserySession = (await nRes.json())[0];
       await ctx.dispose();
 
       await openSeedGroup(page, "Wednesday Prayer Service");
@@ -402,6 +421,14 @@ test.describe.serial("Group Management", () => {
       await expect(rows.last()).toContainText("Entered (1)");
       await dialog.getByRole("button", { name: "Close" }).click();
       await expect(dialog).toHaveCount(0);
+
+      // A group name opens that group's session for the same date, not its home page.
+      await page.locator('[data-testid="session-attendance-status-button"]').click();
+      await dialog.locator('[data-testid="session-status-row"]').filter({ hasText: "Nursery (0-2)" }).getByRole("link").click();
+      await expect(dialog).toHaveCount(0);
+      await expect(page).toHaveURL(new RegExp(`/groups/GRP00000007\\?view=sessions&sessionId=${nurserySession.id}`));
+      await expect(page.getByRole("button").filter({ hasText: "03/11/2026" }).first()).toContainText("Active", { timeout: 10000 });
+      await expect(page.locator('[data-cy="session-present-msg"]')).toBeVisible({ timeout: 10000 });
     });
 
     test("should add person to session", async () => {
@@ -410,6 +437,25 @@ test.describe.serial("Group Management", () => {
       await saveAttendance(page);
       await expect(page.locator('[data-testid="session-present-count"]')).toHaveText("1 of 3 present");
       await expect(page.getByRole("checkbox", { name: "William Anderson" })).toBeChecked();
+    });
+
+    test("a person created from the session add box is added and marked present", async () => {
+      await openSessionOn(page, "2026-04-08");
+      const last = `Newcomer${Date.now()}`;
+      const box = page.getByTestId("session-person-add");
+      await box.locator('input[name="personAddText"]').fill(`Zelda ${last}`);
+      await box.locator('[data-testid="search-button"]').click();
+      await box.getByRole("button", { name: /Add (a )?New Person/ }).click();
+
+      const dialog = page.getByRole("dialog").filter({ hasText: /Add (a )?New Person/ });
+      await dialog.locator('input[name="first"]').fill("Zelda");
+      await dialog.locator('input[name="last"]').fill(last);
+      await dialog.getByRole("button", { name: "Add", exact: true }).click();
+      await expect(dialog).toBeHidden();
+
+      const row = page.getByTestId("session-roster-row").filter({ hasText: `Zelda ${last}` });
+      await expect(row).toHaveCount(1, { timeout: 10000 });
+      await expect(row.locator('input[type="checkbox"]')).toBeChecked();
     });
 
     test("should remove person from session", async () => {
@@ -462,7 +508,8 @@ test.describe.serial("Group Management", () => {
     });
 
     test("prints a contact roster from the members tab", async () => {
-      await openSeedGroup(page, SESSION_GROUP);
+      // The group record opens on the summary plate. The print button lives on the members tab.
+      await openSeedMembers(page, SESSION_GROUP);
       await page.locator('[data-testid="print-roster-button"]').click();
       await expect(page.getByTestId("print-attendance-sheet")).toBeVisible({ timeout: 10000 });
       await expect(page.getByTestId("print-contact-roster")).toBeVisible();

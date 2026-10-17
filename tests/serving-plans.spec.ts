@@ -476,6 +476,7 @@ test.describe("Copy plan from previous plan", () => {
     const newPlan = await (await copyPost).json();
 
     await page.goto("/serving/plans/" + newPlan.id);
+    await page.getByTestId("plan-notes-toggle").click();
     await expect(page.getByTestId("plan-notes-input").locator("textarea").first()).toHaveValue("Upcoming worship services including special seasonal service", { timeout: 15000 });
   });
 });
@@ -1209,5 +1210,98 @@ test.describe.serial("Assign a position directly to a person", () => {
     const res = await ctx.get(`${API}/doing/positions/${positionIds[1]}`, auth);
     expect(res.ok()).toBeTruthy();
     expect((await res.json()).groupId || "").toBe("");
+  });
+});
+
+// ChurchAppsSupport#1241: the Upcoming list puts the next week on top; Past stays newest-first.
+test.describe("Plan list order", () => {
+  const API = process.env.API_BASE || "http://localhost:8084";
+  const PLAN_TYPE_NAME = "Plan Order Spec " + Date.now().toString().slice(-6);
+  let ctx: APIRequestContext;
+  let auth: { headers: { Authorization: string } };
+  let planTypeId: string;
+  const planIds: string[] = [];
+
+  test.beforeAll(async () => {
+    ctx = await pwRequest.newContext();
+    const loginRes = await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+    expect(loginRes.ok()).toBeTruthy();
+    const body = await loginRes.json();
+    const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+    auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+    const typeRes = await ctx.post(`${API}/doing/planTypes`, { ...auth, data: [{ ministryId: "GRP0000000a", name: PLAN_TYPE_NAME }] });
+    planTypeId = (await typeRes.json())[0].id;
+    const planRes = await ctx.post(`${API}/doing/plans`, {
+      ...auth,
+      data: [
+        { name: "Order Week Two", serviceDate: "2033-03-13", ministryId: "GRP0000000a", planTypeId },
+        { name: "Order Week One", serviceDate: "2033-03-06", ministryId: "GRP0000000a", planTypeId },
+        { name: "Order Week Three", serviceDate: "2033-03-20", ministryId: "GRP0000000a", planTypeId },
+        { name: "Order Last Year", serviceDate: "2020-01-05", ministryId: "GRP0000000a", planTypeId },
+        { name: "Order Last Month", serviceDate: "2020-02-02", ministryId: "GRP0000000a", planTypeId }
+      ]
+    });
+    planIds.push(...(await planRes.json()).map((p: any) => p.id));
+  });
+
+  test.afterAll(async () => {
+    for (const id of planIds) await ctx.delete(`${API}/doing/plans/${id}`, auth);
+    if (planTypeId) await ctx.delete(`${API}/doing/planTypes/${planTypeId}`, auth);
+    await ctx.dispose();
+  });
+
+  test("upcoming plans are listed soonest first and past plans newest first", async ({ page }) => {
+    await page.goto(`/serving/planTypes/${planTypeId}`);
+    const names = page.locator("tbody tr td:first-child a");
+    const table = page.getByRole("region", { name: "Plans" });
+    await expect(names).toHaveText(["Order Week One", "Order Week Two", "Order Week Three"], { timeout: 15000 });
+    await expect(table.getByText("Order Last Month")).toHaveCount(0);
+    await expect(table.getByText("Order Last Year")).toHaveCount(0);
+    await page.getByTestId("plans-past-pill").click();
+    await expect(names).toHaveText(["Order Last Month", "Order Last Year"], { timeout: 15000 });
+    for (const name of ["Order Week One", "Order Week Two", "Order Week Three"]) await expect(table.getByText(name)).toHaveCount(0);
+  });
+});
+
+// ChurchAppsSupport#1242: a plan type with only upcoming plans shows an empty Past tab, pills intact.
+test.describe("Plan list empty Past tab", () => {
+  const API = process.env.API_BASE || "http://localhost:8084";
+  const PLAN_TYPE_NAME = "Plan Past Empty Spec " + Date.now().toString().slice(-6);
+  let ctx: APIRequestContext;
+  let auth: { headers: { Authorization: string } };
+  let planTypeId: string;
+  let planId: string;
+
+  test.beforeAll(async () => {
+    ctx = await pwRequest.newContext();
+    const loginRes = await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+    expect(loginRes.ok()).toBeTruthy();
+    const body = await loginRes.json();
+    const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+    auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+    const typeRes = await ctx.post(`${API}/doing/planTypes`, { ...auth, data: [{ ministryId: "GRP0000000a", name: PLAN_TYPE_NAME }] });
+    planTypeId = (await typeRes.json())[0].id;
+    const planRes = await ctx.post(`${API}/doing/plans`, {
+      ...auth,
+      data: [{ name: "Empty Past Week One", serviceDate: "2033-03-06", ministryId: "GRP0000000a", planTypeId }]
+    });
+    planId = (await planRes.json())[0].id;
+  });
+
+  test.afterAll(async () => {
+    if (planId) await ctx.delete(`${API}/doing/plans/${planId}`, auth);
+    if (planTypeId) await ctx.delete(`${API}/doing/planTypes/${planTypeId}`, auth);
+    await ctx.dispose();
+  });
+
+  test("Past tab is empty when every plan is upcoming", async ({ page }) => {
+    await page.goto(`/serving/planTypes/${planTypeId}`);
+    await expect(page.getByRole("link", { name: "Empty Past Week One" })).toBeVisible({ timeout: 15000 });
+    await page.getByTestId("plans-past-pill").click();
+    await expect(page.getByText("No past plans yet.")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("plans-upcoming-pill")).toBeVisible();
+    await expect(page.getByTestId("plans-past-pill")).toBeVisible();
+    await page.getByTestId("plans-upcoming-pill").click();
+    await expect(page.getByRole("link", { name: "Empty Past Week One" })).toBeVisible({ timeout: 15000 });
   });
 });
