@@ -991,3 +991,11 @@ label .description {
     display: none !important;
   }
 }
+
+/* MyConnect: logo-login.png is drawn at twice its display size so it stays sharp; pin it to 48px high. */
+img[src="/images/logo-login.png"] {
+  height: 48px !important;
+  width: auto !important;
+  max-width: 100%;
+  object-fit: contain;
+}

@@ -79,7 +79,7 @@ export const Login: React.FC = () => {
           handleRedirect={handleRedirect}
           defaultEmail={process.env.REACT_APP_STAGE === "demo" ? "demo@b1.church" : undefined}
           defaultPassword={process.env.REACT_APP_STAGE === "demo" ? "password" : undefined}
-          showFooter={true}
+          showFooter={false}
           containerStyle={{ minHeight: "auto", flex: 1 }}
         />
       </div>

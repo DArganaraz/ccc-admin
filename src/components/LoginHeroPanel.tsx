@@ -1,20 +1,20 @@
 import React from "react";
-import { Box, Stack, Typography, alpha, type SxProps, type Theme } from "@mui/material";
+import { Box, Link, Stack, Typography, alpha, type SxProps, type Theme } from "@mui/material";
 import PeopleIcon from "@mui/icons-material/People";
 import EventIcon from "@mui/icons-material/Event";
-import AttachMoneyIcon from "@mui/icons-material/AttachMoney";
-import LinkIcon from "@mui/icons-material/Link";
-import { Locale } from "@churchapps/apphelper";
+import AssignmentIndIcon from "@mui/icons-material/AssignmentInd";
+import LanguageIcon from "@mui/icons-material/Language";
 import { useThemeMode } from "../ThemeContext";
 
-const features: { id: string; icon: React.ReactNode; getLabel: () => string }[] = [
-  { id: "people", icon: <PeopleIcon />, getLabel: () => Locale.label("components.loginHeroPanel.featurePeople") },
-  { id: "planning", icon: <EventIcon />, getLabel: () => Locale.label("components.loginHeroPanel.featurePlanning") },
-  { id: "donations", icon: <AttachMoneyIcon />, getLabel: () => Locale.label("components.loginHeroPanel.featureDonations") },
-  { id: "website", icon: <LinkIcon />, getLabel: () => Locale.label("components.loginHeroPanel.featureWebsite") }
+// MyConnect: the desktop login panel shows our logo, a short feature list and a quiet credit to B1Church, which the software is built on.
+const features: { id: string; icon: React.ReactNode; label: string }[] = [
+  { id: "people", icon: <PeopleIcon />, label: "People & households" },
+  { id: "groups", icon: <EventIcon />, label: "Groups & events" },
+  { id: "serving", icon: <AssignmentIndIcon />, label: "Serving rosters" },
+  { id: "website", icon: <LanguageIcon />, label: "Members' website" }
 ];
 
-const panelSx = { flex: 1, display: { xs: "none", md: "flex" }, flexDirection: "column", justifyContent: "center", alignItems: "center", p: 6 } as const;
+const panelSx = { flex: 1, display: { xs: "none", md: "flex" }, flexDirection: "column", alignItems: "center", p: 6 } as const;
 
 // Classic keeps the pre-redesign blue gradient panel.
 const classicPanelSx: SxProps<Theme> = (theme) => ({
@@ -28,30 +28,34 @@ const classicPanelSx: SxProps<Theme> = (theme) => ({
 });
 
 export const LoginHeroPanel: React.FC = () => {
-  const classic = useThemeMode().themeId === "classic";
+  const { themeId, mode } = useThemeMode();
+  const classic = themeId === "classic";
+  // The classic gradient is dark blue in light mode and light blue in dark mode.
+  const white = classic ? mode === "light" : mode === "dark";
   return (
     <Box sx={classic ? classicPanelSx : { ...panelSx, backgroundColor: "var(--b1-sidebar)", borderRight: "1px solid var(--b1-border)", color: "text.primary" }}>
-      <Box sx={{ position: "relative", zIndex: 1, textAlign: "center", maxWidth: 420 }}>
-        <Box sx={{ mb: 4 }}>
-          <Box component="img" src={classic ? "/images/logo-white.png" : "/images/logo-login.png"} alt="B1.church" sx={{ maxWidth: 280, height: "auto" }} />
-        </Box>
-        <Typography component="h1" variant="h2" sx={{ mt: 0, mb: 2, ...(classic && { fontSize: "2.125rem", lineHeight: 1.2, color: "inherit" }) }}>
-          {Locale.label("components.loginHeroPanel.title")}
-        </Typography>
-        <Typography color={classic ? "rgba(255,255,255,0.8)" : "text.secondary"} sx={{ mb: classic ? 5 : 4, ...(classic && { lineHeight: 1.6 }) }}>
-          {Locale.label("components.loginHeroPanel.subtitle")}
-        </Typography>
-        <Stack spacing={2} sx={{ textAlign: "left" }}>
+      <Box sx={{ position: "relative", zIndex: 1, flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", maxWidth: 380 }}>
+        <Box component="img" src={white ? "/images/myconnect-full-white.svg" : "/images/myconnect-full.svg"} alt="MyConnect" sx={{ width: 380, maxWidth: "100%", height: "auto", mb: 3 }} />
+        <Typography sx={{ mb: 4, opacity: 0.8, textAlign: "center" }}>Your church, in one place.</Typography>
+        <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: 4, rowGap: 2 }} data-testid="login-features">
           {features.map((f) => (
-            <Stack key={f.id} direction="row" spacing={1.5} alignItems="center">
-              {classic
-                ? <Box sx={(theme) => ({ width: 32, height: 32, minWidth: 32, background: alpha(theme.palette.common.white, 0.15), borderRadius: 1, display: "flex", alignItems: "center", justifyContent: "center", "& svg": { fontSize: 16 } })}>{f.icon}</Box>
-                : <Box sx={{ display: "flex", color: "primary.main", "& svg": { fontSize: 20 } }}>{f.icon}</Box>}
-              <Typography variant="body2" component="span" sx={classic ? { color: "rgba(255,255,255,0.9)" } : undefined}>{f.getLabel()}</Typography>
+            <Stack key={f.id} direction="row" spacing={1.25} alignItems="center">
+              <Box sx={{ display: "flex", opacity: classic ? 0.9 : 1, color: classic ? "inherit" : "primary.main", "& svg": { fontSize: 20 } }}>{f.icon}</Box>
+              <Typography variant="body2" component="span" sx={{ opacity: 0.9 }}>{f.label}</Typography>
             </Stack>
           ))}
-        </Stack>
+        </Box>
       </Box>
+      <Link
+        href="https://b1.church"
+        target="_blank"
+        rel="noopener noreferrer"
+        underline="hover"
+        variant="caption"
+        data-testid="login-powered-by"
+        sx={{ position: "relative", zIndex: 1, color: "inherit", opacity: 0.55, "&:hover": { opacity: 0.9 } }}>
+        Powered by B1Church software
+      </Link>
     </Box>
   );
 };
