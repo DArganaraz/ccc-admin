@@ -83,6 +83,7 @@ services:
         REACT_APP_MESSAGING_API_SOCKET: ${SOCKET_URL:-ws://localhost:8084}
         REACT_APP_B1_ROOT: ${B1APP_URL:-http://localhost:3000}
         REACT_APP_B1ADMIN_ROOT: ${B1ADMIN_URL:-http://localhost:3101}
+        REACT_APP_B1_WEBSITE_URL: "http://{subdomain}.localhost:3000"
     ports:
       - "3101:3101"
     restart: unless-stopped
