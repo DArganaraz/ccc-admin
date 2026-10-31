@@ -6,7 +6,7 @@
 
 .om-logo:hover { background: rgba(255, 255, 255, 0.12); }
 
-.om-logo img { height: 32px; display: block; }
+.om-logo img { height: 28px; display: block; }
 
 .om-search {
   display: inline-flex;

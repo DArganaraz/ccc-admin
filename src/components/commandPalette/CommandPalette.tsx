@@ -179,7 +179,7 @@ export const CommandPalette: React.FC<{ menu: PaletteMenuItem[]; label: string; 
 
   const field = slot && createPortal(
     <div className="om-nav">
-      <RouterLink to="/" className="om-logo" aria-label="Dashboard"><img src="/images/logo-icon.png" alt="" /></RouterLink>
+      <RouterLink to="/" className="om-logo" aria-label="Dashboard"><img src="/images/myconnect-full-white.svg" alt="MyConnect" /></RouterLink>
       <button type="button" className="om-search" onClick={openPalette} data-testid="command-palette-open" aria-label={"Search or jump, current section " + label} title={"Search or jump (" + (isMac ? "⌘" : "Ctrl") + " K)"}>
         <Icon fontSize="small">search</Icon>
         <span className="om-search-label">
