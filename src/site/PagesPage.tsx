@@ -114,13 +114,14 @@ export const PagesPage = () => {
     ApiHelper.get("/links?category=website" + (siteId ? "&siteId=" + siteId : ""), "ContentApi").then((data: any) => {
       setLinks(data);
     });
+    // Content editors without the settings permission get a 401 here; still show them the pages.
     ApiHelper.get("/settings", "ContentApi").then((data: GenericSettingInterface[]) => {
       const loginSetting = data.filter((d: any) => d.keyName === "showLogin");
       if (loginSetting) setShowLogin(loginSetting[0]);
       const hideSetting = data.find((d: any) => d.keyName === "hidePublicSite");
       setHidePublicSite(hideSetting);
       loadPageTree(hideSetting?.value === "true");
-    });
+    }).catch(() => loadPageTree(false));
   };
 
   const handleSwitchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
