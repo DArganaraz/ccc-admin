@@ -2,7 +2,7 @@ import React, { useMemo } from "react";
 import { type HouseholdInterface, type PersonInterface } from "@churchapps/helpers";
 import { ApiHelper, DateHelper, Locale, Permissions, PersonAvatar, PersonHelper, UserHelper } from "@churchapps/apphelper";
 import { Box, Button, ButtonBase, Link, Stack, Typography } from "@mui/material";
-import { ChatBubbleOutline as TextIcon, MailOutline as MailIcon, WarningAmber as WarningIcon } from "@mui/icons-material";
+import { Check as CheckIcon, ChatBubbleOutline as TextIcon, Close as CloseIcon, MailOutline as MailIcon, WarningAmber as WarningIcon } from "@mui/icons-material";
 import { SendEmailDialog } from "../../groups/components/SendEmailDialog";
 import { SendTextDialog } from "../../groups/components/SendTextDialog";
 import { type PersonFieldInterface, type PersonFieldValueInterface } from "../../helpers/Interfaces";
@@ -90,6 +90,9 @@ export const PersonIdentity: React.FC<Props> = (props) => {
     () => customFields.map((f) => ({ f, text: formatFieldValue(f, customValues[f.id || ""]) })).filter((x) => x.text),
     [customFields, customValues]
   );
+  // Yes/No custom fields (e.g. WWCC) show as pills beside the status so they can be seen at a glance.
+  const flagFields = extraFields.filter((x) => x.f.fieldType === "Yes/No");
+  const detailFields = extraFields.filter((x) => x.f.fieldType !== "Yes/No");
 
   const contact = person.contactInfo ?? ({} as NonNullable<PersonInterface["contactInfo"]>);
   const phones = [
@@ -133,9 +136,18 @@ export const PersonIdentity: React.FC<Props> = (props) => {
       <Typography id="page-header-title" variant="h1" component="h1" sx={{ mt: 2, overflowWrap: "anywhere" }}>{person.name?.display}</Typography>
       {facts && <Typography variant="body1" color="text.secondary" sx={{ mt: 0.5 }}>{facts}</Typography>}
 
-      {(person.membershipStatus || userEmail || person.nametagNotes || person.optedOut) && (
+      {(person.membershipStatus || userEmail || person.nametagNotes || person.optedOut || flagFields.length > 0) && (
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
           {person.membershipStatus && <Pill tone={memberTone(person.membershipStatus)}>{person.membershipStatus}</Pill>}
+          {flagFields.map((x) => {
+            const yes = customValues[x.f.id || ""] === "True";
+            return (
+              <Pill key={x.f.id || x.f.name} tone={yes ? "primary" : "warning"} data-testid="person-flag">
+                {yes ? <CheckIcon aria-hidden sx={{ fontSize: 16 }} /> : <CloseIcon aria-hidden sx={{ fontSize: 16 }} />}
+                {yes ? x.f.name : x.f.name + ": " + x.text}
+              </Pill>
+            );
+          })}
           {person.nametagNotes && (
             <Pill tone="warning" data-testid="person-caution">
               <WarningIcon aria-hidden sx={{ fontSize: 16 }} />
@@ -148,7 +160,7 @@ export const PersonIdentity: React.FC<Props> = (props) => {
         </Stack>
       )}
 
-      {(contact.email || phones.length > 0 || addressLines.length > 0 || userEmail || person.donorNumber || extraFields.length > 0) && (
+      {(contact.email || phones.length > 0 || addressLines.length > 0 || userEmail || person.donorNumber || detailFields.length > 0) && (
         <Stack spacing={1} sx={{ mt: 2 }} data-testid="person-contact">
           {contact.mobilePhone && (
             <Link href={"tel:" + contact.mobilePhone.replace(/[^0-9+]/g, "")} underline="hover" sx={{ typography: "h3", fontWeight: 600, color: "text.primary", width: "fit-content" }} aria-label={`${Locale.label("people.personView.mobile")} ${formattedPhoneNumber(contact.mobilePhone)}`}>
@@ -170,7 +182,7 @@ export const PersonIdentity: React.FC<Props> = (props) => {
           )}
           {person.donorNumber && <Typography sx={quiet}>{Locale.label("people.personEdit.donorNumber")} <Box component="span" sx={strong}>{person.donorNumber}</Box></Typography>}
           {userEmail && <Typography sx={quiet}>{Locale.label("people.personView.hasLoginLabel").replace("{email}", userEmail)}</Typography>}
-          {extraFields.map((x) => (
+          {detailFields.map((x) => (
             <Typography key={x.f.id || x.f.name} sx={quiet}>{x.f.name}: <Box component="span" sx={strong}>{x.text}</Box></Typography>
           ))}
         </Stack>
