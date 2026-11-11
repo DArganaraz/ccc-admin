@@ -2,6 +2,7 @@ FROM node:22-slim AS build
 WORKDIR /app
 RUN corepack enable
 COPY package.json yarn.lock .yarnrc.yml ./
+COPY .yarn/patches ./.yarn/patches
 RUN yarn install --immutable && yarn postinstall
 COPY . .
 # Self-host image: served under /admin, every URL derived from the browser origin at runtime.
