@@ -1,5 +1,6 @@
 import React from "react";
 import { useReactToPrint } from "react-to-print";
+import { useNavigate } from "react-router-dom";
 import { ArrayHelper, ApiHelper, UserHelper, DateHelper, CurrencyHelper, Permissions, UniqueIdHelper, Loading, Locale } from "@churchapps/apphelper";
 import { type DonationInterface, type DonationBatchInterface, type FundInterface, type FundDonationInterface } from "@churchapps/helpers";
 import { Box, Table, TableBody, TableCell, TableRow, TableHead, Typography, Stack } from "@mui/material";
@@ -7,14 +8,16 @@ import { EmptyState } from "../../components";
 import { RecordHeading, StatusBadge, TextAction, VerbRow, hoverRowSx, numericCellSx, tableScrollSx } from "../../components/ui";
 import { CsvVerb } from "./GivingParts";
 import UserContext from "../../UserContext";
-import { BatchPrintDocument, getFundTotals } from "./BatchPrintDocument";
+import { BatchPrintDocument, getFundTotals, setEnteredByName } from "./BatchPrintDocument";
 import { loadPeopleNames } from "../loadPeopleNames";
+import { usePrintLogo } from "../../components/PrintChurchHeader";
 
 interface Props {
   batch: DonationBatchInterface;
   funds: FundInterface[];
   editFunction: (id: string) => void;
-  currency?: string
+  currency?: string;
+  canEdit?: boolean;
 }
 
 const QBO_HEADERS = [
@@ -46,28 +49,33 @@ const buildQboJournalRows = (batch: DonationBatchInterface, donationIds: string[
 export const Donations: React.FC<Props> = ({ currency = "usd", ...props }) => {
   const { batch, funds, editFunction } = props;
   const context = React.useContext(UserContext);
+  const navigate = useNavigate();
   const [donations, setDonations] = React.useState<DonationInterface[] | null>(null);
   const [fundDonations, setFundDonations] = React.useState<FundDonationInterface[]>([]);
   const [rates, setRates] = React.useState<Record<string, number>>({});
   const printRef = React.useRef<HTMLDivElement>(null);
   const [printing, setPrinting] = React.useState(false);
+  const printLogo = usePrintLogo(context?.userChurch?.church?.id);
   const onAfterPrint = React.useCallback(() => setPrinting(false), []);
   const handlePrint = useReactToPrint({ contentRef: printRef, documentTitle: batch?.name, onAfterPrint });
 
   // The printout is only mounted while printing so the page doesn't carry a hidden second copy of every row.
   React.useEffect(() => {
-    if (printing) handlePrint();
-  }, [printing, handlePrint]);
+    if (printing && printLogo.ready) handlePrint();
+  }, [printing, printLogo.ready, handlePrint]);
 
   // Memoize permission check to avoid repeated calls
-  const canEdit = React.useMemo(() => UserHelper.checkAccess(Permissions.givingApi.donations.edit), []);
+  // The batch page passes canEdit so a closed batch hides the Edit links; elsewhere it follows Edit Donations.
+  const hasEditPermission = React.useMemo(() => UserHelper.checkAccess(Permissions.givingApi.donations.edit), []);
+  const canEdit = props.canEdit ?? hasEditPermission;
 
   const populatePeople = React.useCallback(async (data: DonationInterface[]) => {
-    const peopleIds = ArrayHelper.getIds(data, "personId");
+    const peopleIds = [...ArrayHelper.getIds(data, "personId"), ...ArrayHelper.getIds(data, "enteredBy")];
     if (peopleIds.length > 0) {
       const people = await loadPeopleNames(peopleIds);
       data.forEach((d) => {
         if (!UniqueIdHelper.isMissing(d.personId)) d.person = ArrayHelper.getOne(people, "id", d.personId);
+        setEnteredByName(d, people);
       });
     }
     setDonations(data);
@@ -127,11 +135,11 @@ export const Donations: React.FC<Props> = ({ currency = "usd", ...props }) => {
           <TableCell>{Locale.label("donations.donations.date")}</TableCell>
           <TableCell>{Locale.label("donations.donations.notes")}</TableCell>
           <TableCell align="right" sx={numericCellSx}>{Locale.label("donations.donations.amt")}</TableCell>
-          {canEdit && <TableCell align="right" />}
+          <TableCell align="right" />
         </TableRow>
       </TableHead>
     );
-  }, [donations, props.funds.length, canEdit]);
+  }, [donations, props.funds.length]);
 
   const getRows = React.useCallback(() => {
     const rows: React.ReactNode[] = [];
@@ -143,6 +151,10 @@ export const Donations: React.FC<Props> = ({ currency = "usd", ...props }) => {
       const editButton = canEdit ? (
         <TextAction small data-cy={`edit-link-${i}`} onClick={() => editFunction(d.id || "")}>{Locale.label("common.edit")}</TextAction>
       ) : null;
+      // Anyone who can see the batch can print a receipt; Edit stays behind canEdit.
+      const receiptButton = (
+        <TextAction small data-testid={"donation-receipt-" + d.id} onClick={() => navigate("/donations/receipt/" + d.id)}>{Locale.label("donations.donations.receipt")}</TextAction>
+      );
 
       const isPending = (d as any).status === "pending";
       const isRefunded = (d as any).status === "refunded";
@@ -157,15 +169,13 @@ export const Donations: React.FC<Props> = ({ currency = "usd", ...props }) => {
           </TableCell>
           <TableCell>
             <Typography variant="body2">{d.person?.name.display || Locale.label("donations.donations.anon")}</Typography>
+            {(d as any).enteredByName && <Typography variant="caption" color="text.secondary" sx={{ display: "block" }} data-testid="donation-entered-by">{Locale.label("donations.donations.enteredBy").replace("{name}", (d as any).enteredByName)}</Typography>}
           </TableCell>
           <TableCell>
             <Typography variant="body2">{d.donationDate ? DateHelper.prettyDate(new Date(d.donationDate.split("T")[0] + "T00:00:00")) : ""}</Typography>
           </TableCell>
           <TableCell>
-            <Typography
-              variant="body2"
-              title={d.notes || ""}
-              sx={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "text.secondary" }}>
+            <Typography variant="body2" sx={{ maxWidth: 360, whiteSpace: "pre-wrap", overflowWrap: "anywhere", color: "text.secondary" }}>
               {d.notes || ""}
             </Typography>
           </TableCell>
@@ -174,7 +184,9 @@ export const Donations: React.FC<Props> = ({ currency = "usd", ...props }) => {
               {CurrencyHelper.formatCurrencyWithLocale(d.amount || 0, d.currency || currency)}
             </Typography>
           </TableCell>
-          {canEdit && <TableCell align="right" className="rowActions">{editButton}</TableCell>}
+          <TableCell align="right" className="rowActions">
+            <Stack direction="row" spacing={1} justifyContent="flex-end">{receiptButton}{editButton}</Stack>
+          </TableCell>
         </TableRow>
       );
     }
@@ -195,24 +207,26 @@ export const Donations: React.FC<Props> = ({ currency = "usd", ...props }) => {
           </Typography>
           {isConverted && <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>{Locale.label("donations.donations.convertedNote")}</Typography>}
         </TableCell>
-        {canEdit && <TableCell></TableCell>}
+        <TableCell></TableCell>
       </TableRow>
     );
 
     return rows;
-  }, [donations, props.funds.length, canEdit, editFunction, donationsTotal, isConverted, currency]);
+  }, [
+    donations, props.funds.length, canEdit, editFunction, navigate, donationsTotal, isConverted, currency
+  ]);
 
   const getPrintContent = React.useCallback(() => {
     if (!printing || !donations || donations.length === 0) return null;
     return (
       <Box sx={{ display: "none" }}>
         <Box ref={printRef} sx={{ p: 2 }} data-testid="batch-print">
-          <BatchPrintDocument churchName={context?.userChurch?.church?.name} batch={batch} donations={donations} fundDonations={fundDonations} funds={funds} currency={currency} rates={rates} />
+          <BatchPrintDocument churchName={context?.userChurch?.church?.name} logoUrl={printLogo.logoUrl} batch={batch} donations={donations} fundDonations={fundDonations} funds={funds} currency={currency} rates={rates} />
         </Box>
       </Box>
     );
   }, [
-    printing, donations, fundDonations, funds, batch, currency, rates, context
+    printing, donations, fundDonations, funds, batch, currency, rates, context, printLogo.logoUrl
   ]);
 
   React.useEffect(() => {

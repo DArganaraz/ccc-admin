@@ -1,11 +1,14 @@
 import React from "react";
-import { FormControl, FormControlLabel, Grid, Icon, InputLabel, MenuItem, Select, Stack, Switch, TextField, Tooltip, Typography } from "@mui/material";
+import { FormControl, FormControlLabel, Grid, Icon, InputLabel, MenuItem, Select, Snackbar, Stack, Switch, TextField, Tooltip, Typography } from "@mui/material";
 import { ApiHelper, Locale, UniqueIdHelper, UserHelper, Permissions } from "@churchapps/apphelper";
-import type { GenericSettingInterface, GroupInterface, VisibilityPreferenceInterface } from "@churchapps/helpers";
+import type { GenericSettingInterface, GroupInterface } from "@churchapps/helpers";
 import { FormCard } from "../components/ui/FormCard";
 import { useRequirePermission } from "../hooks";
 import { MobileChrome } from "./components/MobileChrome";
 import { clearSiteCache } from "../site/siteCache";
+
+// The church-wide defaults always hold a value for every field (the Api falls back to "members").
+interface DefaultVisibility { address: string; phoneNumber: string; email: string }
 
 export const B1MobilePage: React.FC = () => {
   const [groups, setGroups] = React.useState<GroupInterface[] | null>(null);
@@ -16,14 +19,26 @@ export const B1MobilePage: React.FC = () => {
   const [addressSetting, setAddressSetting] = React.useState<GenericSettingInterface | null>(null);
   const [phoneSetting, setPhoneSetting] = React.useState<GenericSettingInterface | null>(null);
   const [emailSetting, setEmailSetting] = React.useState<GenericSettingInterface | null>(null);
-  const [pref, setPref] = React.useState<VisibilityPreferenceInterface>({ address: "", phoneNumber: "", email: "" } as VisibilityPreferenceInterface);
+  const [pref, setPref] = React.useState<DefaultVisibility>({ address: "", phoneNumber: "", email: "" });
   const [messagingMinimumAge, setMessagingMinimumAge] = React.useState("18");
   const [msgAgeSetting, setMsgAgeSetting] = React.useState<GenericSettingInterface | null>(null);
   const [hideSignInPrompt, setHideSignInPrompt] = React.useState(false);
   const [hideSignInSetting, setHideSignInSetting] = React.useState<GenericSettingInterface | null>(null);
   const [signInPromptText, setSignInPromptText] = React.useState("");
   const [signInPromptTextSetting, setSignInPromptTextSetting] = React.useState<GenericSettingInterface | null>(null);
+  const [tileLayout, setTileLayout] = React.useState("grid");
+  const [tileLayoutSetting, setTileLayoutSetting] = React.useState<GenericSettingInterface | null>(null);
+  const [homeAttendance, setHomeAttendance] = React.useState(false);
+  const [homeAttendanceSetting, setHomeAttendanceSetting] = React.useState<GenericSettingInterface | null>(null);
+  const [homeForms, setHomeForms] = React.useState(false);
+  const [homeFormsSetting, setHomeFormsSetting] = React.useState<GenericSettingInterface | null>(null);
+  const [homeNews, setHomeNews] = React.useState(false);
+  const [homeNewsSetting, setHomeNewsSetting] = React.useState<GenericSettingInterface | null>(null);
+  const [newsCategory, setNewsCategory] = React.useState("");
+  const [newsCategorySetting, setNewsCategorySetting] = React.useState<GenericSettingInterface | null>(null);
+  const [postCategories, setPostCategories] = React.useState<string[]>([]);
   const [saving, setSaving] = React.useState(false);
+  const [showSaved, setShowSaved] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
 
   const churchId = UserHelper.currentUserChurch?.church?.id;
@@ -35,6 +50,9 @@ export const B1MobilePage: React.FC = () => {
       ApiHelper.get("/settings", "MembershipApi") as Promise<GenericSettingInterface[]>
     ]);
     setGroups(groupsData);
+    ApiHelper.getAnonymous("/posts/public/" + churchId + "/categories", "ContentApi")
+      .then((c: string[]) => setPostCategories(Array.isArray(c) ? c : []))
+      .catch(() => setPostCategories([]));
 
     const approvalGroupSetting = allSettings.find(s => s.keyName === "directoryApprovalGroupId");
     if (approvalGroupSetting) {
@@ -48,13 +66,14 @@ export const B1MobilePage: React.FC = () => {
       setDirectoryVisibility(dirSetting.value || "Members");
     }
 
-    const p: VisibilityPreferenceInterface = { address: "", phoneNumber: "", email: "" } as VisibilityPreferenceInterface;
+    // With no saved default the Api treats each field as "members", so show that instead of a blank box.
+    const p: DefaultVisibility = { address: "members", phoneNumber: "members", email: "members" };
     const addr = allSettings.find(s => s.keyName === "addressVisibility");
-    if (addr) { setAddressSetting(addr); p.address = addr.value; }
+    if (addr) { setAddressSetting(addr); p.address = addr.value || "members"; }
     const phone = allSettings.find(s => s.keyName === "phoneVisibility");
-    if (phone) { setPhoneSetting(phone); p.phoneNumber = phone.value; }
+    if (phone) { setPhoneSetting(phone); p.phoneNumber = phone.value || "members"; }
     const email = allSettings.find(s => s.keyName === "emailVisibility");
-    if (email) { setEmailSetting(email); p.email = email.value; }
+    if (email) { setEmailSetting(email); p.email = email.value || "members"; }
     setPref(p);
 
     const msgAge = allSettings.find(s => s.keyName === "messagingMinimumAge");
@@ -64,6 +83,16 @@ export const B1MobilePage: React.FC = () => {
     if (hideSignIn) { setHideSignInSetting(hideSignIn); setHideSignInPrompt(hideSignIn.value === "true"); }
     const promptText = allSettings.find(s => s.keyName === "mobileSignInPromptText");
     if (promptText) { setSignInPromptTextSetting(promptText); setSignInPromptText(promptText.value || ""); }
+    const tiles = allSettings.find(s => s.keyName === "mobileTileLayout");
+    if (tiles) { setTileLayoutSetting(tiles); setTileLayout(tiles.value || "grid"); }
+    const attendanceHome = allSettings.find(s => s.keyName === "mobileHomeAttendance");
+    if (attendanceHome) { setHomeAttendanceSetting(attendanceHome); setHomeAttendance(attendanceHome.value === "true"); }
+    const formsHome = allSettings.find(s => s.keyName === "mobileHomeForms");
+    if (formsHome) { setHomeFormsSetting(formsHome); setHomeForms(formsHome.value === "true"); }
+    const newsHome = allSettings.find(s => s.keyName === "mobileHomeNews");
+    if (newsHome) { setHomeNewsSetting(newsHome); setHomeNews(newsHome.value === "true"); }
+    const newsCat = allSettings.find(s => s.keyName === "mobileHomeNewsCategory");
+    if (newsCat) { setNewsCategorySetting(newsCat); setNewsCategory(newsCat.value || ""); }
     setLoaded(true);
   }, [churchId]);
 
@@ -89,12 +118,18 @@ export const B1MobilePage: React.FC = () => {
       const msgAge = toSave(msgAgeSetting, "messagingMinimumAge", messagingMinimumAge);
       const hideSignIn = toSave(hideSignInSetting, "mobileHideSignInPrompt", hideSignInPrompt ? "true" : "false");
       const promptText = toSave(signInPromptTextSetting, "mobileSignInPromptText", signInPromptText.trim());
+      const tiles = toSave(tileLayoutSetting, "mobileTileLayout", tileLayout);
+      const attendanceHome = toSave(homeAttendanceSetting, "mobileHomeAttendance", homeAttendance ? "true" : "false");
+      const formsHome = toSave(homeFormsSetting, "mobileHomeForms", homeForms ? "true" : "false");
+      const newsHome = toSave(homeNewsSetting, "mobileHomeNews", homeNews ? "true" : "false");
+      const newsCat = toSave(newsCategorySetting, "mobileHomeNewsCategory", newsCategory);
 
       await ApiHelper.post("/settings", [
-        approval, visibility, addrSett, phoneSett, emailSett, msgAge, hideSignIn, promptText
+        approval, visibility, addrSett, phoneSett, emailSett, msgAge, hideSignIn, promptText, tiles, attendanceHome, formsHome, newsHome, newsCat
       ], "MembershipApi");
       // The app caches these settings, so refresh it for the home-screen prompt to update right away.
       clearSiteCache();
+      setShowSaved(true);
       await loadData();
     } finally {
       setSaving(false);
@@ -236,7 +271,79 @@ export const B1MobilePage: React.FC = () => {
             />
           </Grid>
         </Grid>
+        <Stack direction="row" alignItems="center" sx={{ mb: 2 }}>
+          <Typography variant="h3">{Locale.label("mobile.b1MobilePage.tileLayoutTitle")}</Typography>
+          <Tooltip title={Locale.label("mobile.b1MobilePage.tileLayoutHelp")} arrow>
+            <Icon fontSize="small" sx={{ cursor: "pointer", color: "text.disabled", ml: 0.5 }}>help_outline</Icon>
+          </Tooltip>
+        </Stack>
+        <Grid container spacing={2} sx={{ mb: 3 }}>
+          <Grid size={{ xs: 12, sm: 6 }}>
+            <FormControl fullWidth size="small">
+              <InputLabel id="mobileTileLayout">{Locale.label("mobile.b1MobilePage.tileLayout")}</InputLabel>
+              <Select
+                fullWidth
+                labelId="mobileTileLayout"
+                label={Locale.label("mobile.b1MobilePage.tileLayout")}
+                name="mobileTileLayout"
+                value={tileLayout}
+                onChange={(e) => setTileLayout(e.target.value)}>
+                <MenuItem value="grid">{Locale.label("mobile.b1MobilePage.tileLayoutGrid")}</MenuItem>
+                <MenuItem value="scroll">{Locale.label("mobile.b1MobilePage.tileLayoutScroll")}</MenuItem>
+                <MenuItem value="autoscroll">{Locale.label("mobile.b1MobilePage.tileLayoutAutoScroll")}</MenuItem>
+                <MenuItem value="list">{Locale.label("mobile.b1MobilePage.tileLayoutList")}</MenuItem>
+                <MenuItem value="gridlist">{Locale.label("mobile.b1MobilePage.tileLayoutGridList")}</MenuItem>
+                <MenuItem value="autoscrolllist">{Locale.label("mobile.b1MobilePage.tileLayoutAutoScrollList")}</MenuItem>
+              </Select>
+            </FormControl>
+          </Grid>
+        </Grid>
+        <Stack direction="row" alignItems="center" sx={{ mb: 1 }}>
+          <Typography variant="h3">{Locale.label("mobile.b1MobilePage.homeScreen")}</Typography>
+          <Tooltip title={Locale.label("mobile.b1MobilePage.homeScreenHelp")} arrow>
+            <Icon fontSize="small" sx={{ cursor: "pointer", color: "text.disabled", ml: 0.5 }}>help_outline</Icon>
+          </Tooltip>
+        </Stack>
+        <Stack sx={{ mb: 1 }}>
+          <FormControlLabel
+            control={<Switch checked={homeAttendance} onChange={(e) => setHomeAttendance(e.target.checked)} data-testid="mobile-home-attendance-switch" />}
+            label={Locale.label("mobile.b1MobilePage.showAttendanceOnHome")}
+          />
+          <FormControlLabel
+            control={<Switch checked={homeForms} onChange={(e) => setHomeForms(e.target.checked)} data-testid="mobile-home-forms-switch" />}
+            label={Locale.label("mobile.b1MobilePage.showFormsOnHome")}
+          />
+          <FormControlLabel
+            control={<Switch checked={homeNews} onChange={(e) => setHomeNews(e.target.checked)} data-testid="mobile-home-news-switch" />}
+            label={Locale.label("mobile.b1MobilePage.showNewsOnHome")}
+          />
+          <Typography variant="body2" color="text.secondary" sx={{ ml: 6 }}>{Locale.label("mobile.b1MobilePage.showNewsOnHomeHelp")}</Typography>
+        </Stack>
+        {homeNews && (
+          <Grid container spacing={2} sx={{ mt: 1, mb: 1 }}>
+            <Grid size={{ xs: 12, sm: 6 }}>
+              <FormControl fullWidth size="small">
+                <InputLabel id="mobileHomeNewsCategory" shrink>{Locale.label("mobile.b1MobilePage.newsCategory")}</InputLabel>
+                <Select
+                  fullWidth
+                  labelId="mobileHomeNewsCategory"
+                  label={Locale.label("mobile.b1MobilePage.newsCategory")}
+                  name="mobileHomeNewsCategory"
+                  value={newsCategory}
+                  displayEmpty
+                  notched
+                  onChange={(e) => setNewsCategory(e.target.value)}
+                  data-testid="mobile-home-news-category">
+                  <MenuItem value="">{Locale.label("mobile.b1MobilePage.newsCategoryAll")}</MenuItem>
+                  {/* Keep a saved category that has no published posts right now. */}
+                  {(newsCategory && !postCategories.includes(newsCategory) ? [newsCategory, ...postCategories] : postCategories).map(c => <MenuItem key={c} value={c}>{c}</MenuItem>)}
+                </Select>
+              </FormControl>
+            </Grid>
+          </Grid>
+        )}
       </FormCard>
+      <Snackbar open={showSaved} autoHideDuration={3000} onClose={() => setShowSaved(false)} message={Locale.label("common.saved")} anchorOrigin={{ vertical: "bottom", horizontal: "center" }} />
     </MobileChrome>
   );
 };

@@ -13,6 +13,7 @@ import {
 import { Locale, CurrencyHelper, UserHelper, Permissions, ArrayHelper } from "@churchapps/apphelper";
 import { type DonationInterface, type FundDonationInterface, type PersonInterface, type FundInterface } from "@churchapps/helpers";
 import JSZip from "jszip";
+import { statementDonations } from "./statementDonations";
 import { EmptyState, PageHeader, PageContainer, Surface, HeaderTextButton } from "../components/ui";
 
 export const BatchGivingStatementsPage = () => {
@@ -21,13 +22,15 @@ export const BatchGivingStatementsPage = () => {
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [currency, setCurrency] = useState<string>("usd");
 
+  // One year only: a church's full giving history can be too large for one response.
+  const yearRange = `startDate=${selectedYear}-01-01&endDate=${selectedYear}-12-31`;
   const allDonations = useQuery<DonationInterface[]>({
-    queryKey: ["/donations", "GivingApi"],
+    queryKey: ["/donations?" + yearRange, "GivingApi"],
     placeholderData: []
   });
 
   const allFundDonations = useQuery<FundDonationInterface[]>({
-    queryKey: ["/fundDonations", "GivingApi"],
+    queryKey: ["/fundDonations?" + yearRange, "GivingApi"],
     placeholderData: []
   });
 
@@ -37,14 +40,13 @@ export const BatchGivingStatementsPage = () => {
   });
 
   const yearDonations = useMemo(() => {
-    return (
-      allDonations.data?.filter((don) => {
-        if (!don.donationDate) return false;
-        const donationDate = new Date(don.donationDate.toString().split("T")[0] + "T00:00:00");
-        return donationDate.getFullYear() === selectedYear;
-      }) || []
-    );
-  }, [allDonations.data, selectedYear]);
+    const inYear = allDonations.data?.filter((don) => {
+      if (!don.donationDate) return false;
+      const donationDate = new Date(don.donationDate.toString().split("T")[0] + "T00:00:00");
+      return donationDate.getFullYear() === selectedYear;
+    }) || [];
+    return statementDonations(inYear, allFundDonations.data || [], funds.data || []);
+  }, [allDonations.data, allFundDonations.data, funds.data, selectedYear]);
 
   const personIds = useMemo(() => {
     const ids = new Set<string>();
@@ -137,7 +139,7 @@ export const BatchGivingStatementsPage = () => {
 
   const totalDonations = yearDonations.length;
 
-  const isLoading = allDonations.isLoading || allFundDonations.isLoading || (personIds.length > 0 && people.isLoading);
+  const isLoading = allDonations.isLoading || allFundDonations.isLoading || allDonations.isPlaceholderData || allFundDonations.isPlaceholderData || funds.isPlaceholderData || (personIds.length > 0 && people.isLoading);
 
   const yearOptions = Array.from({ length: 6 }, (_, i) => currentYear - i);
 

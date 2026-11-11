@@ -3,11 +3,12 @@ import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Box, CircularProgress, Typography } from "@mui/material";
 import { type ContactInfoInterface, type GroupInterface, type GroupMemberInterface } from "@churchapps/helpers";
-import { ApiHelper, Locale, DateHelper } from "@churchapps/apphelper";
+import { ApiHelper, Locale, DateHelper, Permissions, UserHelper } from "@churchapps/apphelper";
 import UserContext from "../UserContext";
 import { PrintChurchHeader, usePrintLogo } from "../components/PrintChurchHeader";
+import { leadsGroup } from "../helpers";
 
-interface GroupServiceTimeRow { groupId?: string; serviceTimeId?: string; serviceTimeName?: string }
+interface GroupServiceTimeRow { groupId?: string; serviceTimeId?: string; serviceTime?: { id?: string; name?: string } }
 
 interface RosterSheet {
   group: GroupInterface;
@@ -17,7 +18,7 @@ interface RosterSheet {
 
 const VISITOR_LINES = 5;
 
-// Group member payloads only carry name.display, so fall back to its last word for the surname.
+// Fall back to the last word of name.display when a payload lacks name.last.
 const sortKey = (gm: GroupMemberInterface) => {
   const name = gm.person?.name;
   const display = (name?.display || "").trim();
@@ -52,7 +53,7 @@ const loadSheet = async (group: GroupInterface, serviceTimeId: string | null): P
   const match = (serviceTimeId && gsts.find((g) => g.serviceTimeId === serviceTimeId)) || gsts[0];
   return {
     group,
-    serviceTimeName: match?.serviceTimeName || "",
+    serviceTimeName: match?.serviceTime?.name || "",
     members: [...(members || [])].sort((a, b) => sortKey(a).localeCompare(sortKey(b)))
   };
 };
@@ -60,9 +61,13 @@ const loadSheet = async (group: GroupInterface, serviceTimeId: string | null): P
 const loadSheets = async (groupId: string | null, serviceTimeId: string | null): Promise<RosterSheet[]> => {
   if (groupId) {
     const group: GroupInterface = await ApiHelper.get("/groups/" + groupId, "MembershipApi");
-    return group?.id ? [await loadSheet(group, serviceTimeId)] : [];
+    if (!group?.id) return [];
+    // One group's roster needs Group Members / View, or leading that group.
+    const sheet = await loadSheet(group, serviceTimeId);
+    return UserHelper.checkAccess(Permissions.membershipApi.groupMembers.view) || leadsGroup(sheet.members) ? [sheet] : [];
   }
-  if (serviceTimeId) {
+  // Every group's roster for a service time needs Group Members / View.
+  if (serviceTimeId && UserHelper.checkAccess(Permissions.membershipApi.groupMembers.view)) {
     // Groups and their service times live in different modules, so match them here.
     const [groups, groupServiceTimes] = await Promise.all([
       ApiHelper.get("/groups", "MembershipApi") as Promise<GroupInterface[]>,

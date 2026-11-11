@@ -1,6 +1,7 @@
 import React, { useEffect } from "react";
 import { CardWithHeader } from "../../components/ui";
-import { Button } from "@mui/material";
+import { Link as RouterLink } from "react-router-dom";
+import { Alert, Box, Button } from "@mui/material";
 import { ApiHelper, ArrayHelper, CommonEnvironmentHelper, DateHelper, Locale, type PersonInterface, UserHelper } from "@churchapps/apphelper";
 import { type AssignmentInterface, type BlockoutDateInterface, type PositionInterface, type TimeInterface } from "@churchapps/helpers";
 import { type PlanInterface, type SchedulingPreferenceInterface } from "../../helpers";
@@ -15,12 +16,16 @@ interface Props {
   blockoutDates: BlockoutDateInterface[];
   canEdit: boolean;
   onUpdate: () => void;
+  /** "summary": one line of conflicts + un-notified volunteers linking to the team page (unfilled counts are shown elsewhere). */
+  variant?: "panel" | "summary";
 }
 
 const servesTime = (t: TimeInterface, categoryName?: string) => !!categoryName && (t?.teams || "").split(",").includes(categoryName);
 
 export const PlanValidation = (props: Props) => {
+  const [notificationError, setNotificationError] = React.useState<string | null>(null);
   const [errors, setErrors] = React.useState<JSX.Element[]>([]);
+  const [conflictCount, setConflictCount] = React.useState(0);
   const { canEdit } = props;
   const [plans, setPlans] = React.useState<PlanInterface[]>([]);
   const [planTimeConflicts, setPlanTimeConflicts] = React.useState<{ time: TimeInterface; overlapingTimes: TimeInterface[] }[]>([]);
@@ -45,11 +50,14 @@ export const PlanValidation = (props: Props) => {
 
       const blockouts: BlockoutDateInterface[] = ArrayHelper.getAll(props.blockoutDates, "personId", person.id);
       blockouts.forEach((b) => {
-        b.endDate = new Date(b.endDate || 0);
-        b.endDate.setHours(23, 59, 59, 999);
+        // Blockouts are calendar dates; read them as local days so a US browser doesn't shift them back.
+        const start = DateHelper.toDate(b.startDate || 0);
+        start.setHours(0, 0, 0, 0);
+        const end = DateHelper.toDate(b.endDate || 0);
+        end.setHours(23, 59, 59, 999);
         let conflict = false;
         times.forEach((t) => {
-          if (new Date(b.startDate || 0) < new Date(t.endTime || 0) && new Date(b.endDate || 0) > new Date(t.startTime || 0)) conflict = true;
+          if (start < new Date(t.endTime || 0) && end > new Date(t.startTime || 0)) conflict = true;
         });
         if (conflict) conflicts.push({ person, blockout: b });
       });
@@ -58,8 +66,8 @@ export const PlanValidation = (props: Props) => {
     conflicts.forEach((c) => {
       issues.push(
         <>
-          <b>{c.person?.name?.display || Locale.label("person.unknown")}:</b> {Locale.label("plans.planValidation.blockCon")} {DateHelper.prettyDate(new Date(c.blockout.startDate || 0))} {Locale.label("plans.planValidation.to")}{" "}
-          {DateHelper.prettyDate(new Date(c.blockout.endDate || 0))}.
+          <b>{c.person?.name?.display || Locale.label("person.unknown")}:</b> {Locale.label("plans.planValidation.blockCon")} {DateHelper.prettyDate(DateHelper.toDate(c.blockout.startDate || 0))} {Locale.label("plans.planValidation.to")}{" "}
+          {DateHelper.prettyDate(DateHelper.toDate(c.blockout.endDate || 0))}.
         </>
       );
     });
@@ -216,10 +224,12 @@ export const PlanValidation = (props: Props) => {
   const validate = () => {
     const result: JSX.Element[] = [];
     validatePoisitionsFilled(result);
+    const unfilled = result.length;
     validateTimeConflicts(result);
     validateBlockout(result);
     validatePreferences(result);
     setErrors(result);
+    setConflictCount(result.length - unfilled);
     return result.length === 0;
   };
 
@@ -300,7 +310,7 @@ export const PlanValidation = (props: Props) => {
   const getPendingNotifications = () => {
     const pending: AssignmentInterface[] = [];
     props.assignments.forEach((a) => {
-      if (!a.notified) pending.push(a);
+      if (!a.notified && (!props.plan.confirmationWorkflowId || a.status === "Unconfirmed")) pending.push(a);
     });
     return pending;
   };
@@ -309,6 +319,14 @@ export const PlanValidation = (props: Props) => {
   const notify = () => {
     if (notifying.current) return;
     notifying.current = true;
+    setNotificationError(null);
+    if (props.plan.confirmationWorkflowId) {
+      ApiHelper.post("/plans/" + props.plan.id + "/issueRequests", {}, "DoingApi")
+        .then(props.onUpdate)
+        .catch(() => setNotificationError(Locale.label("plans.confirmation.issueError", "Requests could not be issued. Check that the selected workflow is active and the plan is published, then try again.")))
+        .finally(() => { notifying.current = false; });
+      return;
+    }
     const pending = getPendingNotifications();
     const promises: Promise<any>[] = [];
     pending.forEach((a) => {
@@ -367,7 +385,7 @@ export const PlanValidation = (props: Props) => {
       );
     }
 
-    if (pending.length === 0) return <p>{Locale.label("plans.planValidation.volNotif")}</p>;
+    if (pending.length === 0) return props.assignments.some((a) => a.personId) ? <p>{Locale.label("plans.planValidation.volNotif")}</p> : null;
     else {
       return (
         <p>
@@ -379,10 +397,28 @@ export const PlanValidation = (props: Props) => {
     }
   };
 
+  if (props.variant === "summary") {
+    const pendingCount = canEdit ? getPendingNotifications().filter((a) => a.personId).length : 0;
+    const parts: string[] = [];
+    if (conflictCount > 0) parts.push(Locale.label(conflictCount === 1 ? "plans.planValidation.conflictCountOne" : "plans.planValidation.conflictCount", conflictCount === 1 ? "1 conflict" : "{count} conflicts").replace("{count}", String(conflictCount)));
+    if (pendingCount > 0) parts.push(Locale.label("plans.planValidation.notNotifiedCount", "{count} not notified").replace("{count}", String(pendingCount)));
+    if (parts.length === 0) return null;
+    return (
+      <Box sx={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 1, mt: 2, px: 1.5, py: 1, borderRadius: "var(--b1-radius-control)", bgcolor: "var(--b1-warning-bg)", typography: "body2" }} data-testid="plan-attention">
+        <Box component="span" sx={{ color: "var(--b1-warning)", fontWeight: 600 }}>{parts.join(" · ")}</Box>
+        <Box component={RouterLink} to={"/serving/plans/" + props.plan.id + "/team"} sx={{ ml: "auto", color: "var(--link)" }} data-testid="plan-attention-link">
+          {Locale.label("plans.planValidation.review", "Review")} →
+        </Box>
+      </Box>
+    );
+  }
+
   return (
     <>
       {ConfirmDialogElement}
       <CardWithHeader title={Locale.label("plans.planValidation.val")}>
+        {notificationError && <Alert severity="error">{notificationError}</Alert>}
+        {props.plan?.confirmationWorkflowId && <Alert severity="info" sx={{ mb: 2 }}>{Locale.label("plans.confirmation.enabled", "New requests use the confirmation workflow. App alerts stay enabled. Follow-ups stop when each request is accepted or declined.")}</Alert>}
         {getErrorList()}
         {getNotificationLink()}
       </CardWithHeader>

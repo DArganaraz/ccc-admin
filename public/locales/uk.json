@@ -231,8 +231,6 @@
       "subscribeTitle": "Підписатися на календар"
     },
     "calendarEdit": {
-      "calendarDetails": "Деталі календаря",
-      "calendarDetailsDesc": "Налаштуйте параметри календаря",
       "calendarName": "Назва календаря",
       "calendarNameAria": "Назва календаря",
       "cancel": "Скасувати",
@@ -256,7 +254,8 @@
       "edit": "Edit",
       "editEvent": "Редагувати подію",
       "manageRegistrations": "Керувати реєстраціями",
-      "noGroups": "Групи не знайдені."
+      "noGroups": "Групи не знайдені.",
+      "notesSuffix": " Нотатки"
     },
     "calendarList": {
       "aboutParagraph1": "Календарі дозволяють організовувати та відображати події вашої церкви.",
@@ -333,14 +332,25 @@
       "title": "Імпортувати календар .ics"
     },
     "newEvent": {
+      "addPhoto": "Додати фото",
+      "clickToAddPhoto": "Натисніть, щоб додати фото",
       "customWindow": "Налаштоване вікно бронювання",
       "daily": "Щодня",
       "description": "Опис",
+      "descriptionHint": "Показується на сторінці події. Підтримуються жирний шрифт, списки й посилання.",
       "end": "Кінець",
       "eventTitle": "Назва",
       "group": "Група",
       "monthly": "Щомісяця",
       "noTemplate": "(без шаблону)",
+      "notesLeaders": "Лідери групи",
+      "notesMembers": "Учасники групи",
+      "notesPostRole": "Хто може додавати примітки",
+      "notesStaff": "Лише персонал",
+      "notesViewRole": "Хто може переглядати примітки",
+      "photo": "Фото події",
+      "photoAlt": "Фото події",
+      "photoHint": "Показується вгорі сторінки події та як плитка в розділі майбутніх подій на вашому сайті.",
       "private": "Приватна",
       "public": "Публічна",
       "repeats": "Повторюється",
@@ -351,6 +361,8 @@
       "seats": "Місця {}",
       "setupMinutes": "Підготовка (хв до)",
       "start": "Початок",
+      "tags": "Теги",
+      "tagsHelp": "Через кому, напр. молодь, студенти. Використовуються для фільтрування елементів календаря на вашому сайті.",
       "teardownMinutes": "Прибирання (хв після)",
       "template": "Шаблон",
       "title": "Нова подія",
@@ -819,8 +831,14 @@
       "subtitle": "Відстежуйте кампанії зобов'язань та прогрес до цілей пожертв"
     },
     "donationBatchPage": {
+      "closeBatch": "Закрити пакет",
+      "closed": "Закрито",
+      "closedNotice": "Цей пакет закрито, тож його пожертви більше не можна змінювати. Попросіть когось із дозволом «Редагування пожертв» відкрити його знову.",
+      "closedNoticeEdit": "Цей пакет закрито. Змінювати його можуть лише люди з дозволом «Редагування пожертв»; відкрийте його знову, щоб інші могли знову вносити пожертви.",
       "editBatch": "Редагувати пакет",
       "giftCount": "Пожертв: {count}",
+      "open": "Відкрито",
+      "reopenBatch": "Відкрити пакет знову",
       "subtitle": "Керуйте пожертвами в цьому пакеті",
       "title": "Пакет пожертв"
     },
@@ -832,6 +850,7 @@
       "export": "Експорт",
       "failedEvents": "Невдалі події ({count})",
       "giftCount": "Пожертв: {count}",
+      "status": "Статус",
       "stripeImportLink": "Імпортувати відсутні транзакції Stripe",
       "subtitle": "Керуйте пакетами пожертв і відстежуйте записи про пожертви"
     },
@@ -848,6 +867,7 @@
       "date": "Дата",
       "fund": "Фонд",
       "inKind": "Натурою",
+      "item": "Предмет",
       "lastDig": "Останні 4 цифри",
       "method": "Метод",
       "refund": "Refund",
@@ -1429,6 +1449,7 @@
       "calendar": "Календар",
       "health": "Здоров'я",
       "members": "Учасники",
+      "notes": "Примітки лідера",
       "sessions": "Сеанси"
     },
     "groupPage": {
@@ -1444,6 +1465,7 @@
       "nextEvent": "Наступна",
       "noMembers": "Ще немає учасників.",
       "noSessions": "Ще немає сеансів.",
+      "notesSuffix": " Нотатки лідера",
       "pendingCount": "Очікують: {count}",
       "seeHealth": "Переглянути стан",
       "sessionCount": "Сеансів: {count}",
@@ -1555,7 +1577,7 @@
       "sentSummarySingular": "Надіслано {successCount} з {recipientCount} відповідного одержувача.",
       "subject": "Тема",
       "subjectMergeFieldHint": "Вставити поле злиття в тему:",
-      "subjectPlaceholder": "наприклад, Привіт {firstName}, оновлення від {churchName}"
+      "subjectPlaceholder": "наприклад, Привіт {{firstName}}, оновлення від {{churchName}}"
     },
     "sendTextDialog": {
       "characterCount": "{count} символів ({segments} сегментів SMS)",
@@ -1614,6 +1636,7 @@
     },
     "sessionEdit": {
       "deleteConfirm": "Ви впевнені, що хочете назавжди видалити цей сеанс?",
+      "notes": "Примітки (що розглядали, оголошення, молитовні прохання)",
       "sesEdit": "Редагувати сеанс"
     },
     "sessionsDisabled": {
@@ -2208,6 +2231,7 @@
     },
     "donation": {
       "checkNumber": "1234",
+      "item": "Опис предмета",
       "lastDigits": "4242",
       "notes": "Додайте примітки до цієї пожертви..."
     },
@@ -2779,6 +2803,7 @@
       "copy": "Copy",
       "description": "This feed always plays the current plan's lesson content. Paste the url below into digital signage software like SignPresenter as an external feed url.",
       "feedUrl": "Feed Url",
+      "freePlay": "Маєте телевізори FreePlay? Заплануйте на них цей тип плану на {link}",
       "instructions": "Instructions for connecting to SignPresenter",
       "title": "Digital Signage Feed"
     },
@@ -3397,6 +3422,7 @@
       "detailsUpdated": "Details updated",
       "download": "Завантажити",
       "downloads": "Downloads",
+      "editPublishers": "Редагувати",
       "feature": "Feature",
       "featureTooltip": "Featured highlights the song on the home page. It is not the Sunday-ready mark — that comes from the listen gate.",
       "featured": "Featured",
@@ -3443,6 +3469,13 @@
       "possibleDuplicateSearch": "Шукати схожі назви у WorshipCommons",
       "possibleDuplicateTooltip": "Файл або назва збігається з піснею, що вже є в бібліотеці — перевірте це перед схваленням",
       "publisher": "Publisher",
+      "publisherAdd": "Додати",
+      "publisherMakePrimary": "Зробити основним",
+      "publisherPrimary": "Основний",
+      "publisherSearch": "Знайдіть користувача за ім'ям або email",
+      "publishersHint": "Кожен видавець бачить пісню в розділі «Мої пісні», може її редагувати й отримує її статистику та сповіщення. Основний видавець — той, хто її завантажив.",
+      "publishersNone": "Видавців ще немає.",
+      "publishersTitle": "Видавці «{name}»",
       "reason": "Reason",
       "recentlyResolved": "Recently Resolved",
       "recordingOwned": "Володіє записом (або має дозвіл власника)",
@@ -3858,11 +3891,11 @@
       "none": "Немає"
     },
     "directoryVisibility": {
-      "everyone": "Everyone (Including Visitors)",
+      "everyone": "Visitors and Above",
       "label": "Show in Directory",
-      "members": "Учасники та персонал",
-      "regularAttendees": "Regular Attendees & Above",
-      "staff": "Лише персонал"
+      "members": "Учасники та вище",
+      "regularAttendees": "Regular Attendees and Above",
+      "staff": "Лише адміністратори"
     },
     "domain": {
       "domainPlaceholder": "yoursite.com",
@@ -3897,7 +3930,7 @@
       "previewSampleData": "Показано зразок: Іван Петренко, john@example.com",
       "previewSubject": "Тема:",
       "subject": "Тема",
-      "subjectPlaceholder": "наприклад, Привіт {firstName}, ласкаво просимо до {churchName}",
+      "subjectPlaceholder": "наприклад, Привіт {{firstName}}, ласкаво просимо до {{churchName}}",
       "subjectRequired": "Тема обов'язкова.",
       "templateName": "Назва шаблону",
       "templateNamePlaceholder": "наприклад, Лист привітання, Нагадування про подію",
@@ -4392,7 +4425,6 @@
       "navHint": "Відвідувачі можуть читати ваші дописи на /blog. Додайте навігаційне посилання на екрані Сторінки, щоб вони могли його знайти:",
       "noPosts": "No posts yet",
       "postCount": "Дописів: {count}",
-      "posts": "Posts",
       "published": "Опубліковано",
       "scheduled": "Заплановано",
       "state": "State",
@@ -4425,9 +4457,14 @@
     },
     "calendarElementEdit": {
       "curatedCalendar": "Курований календар",
+      "display": "Відображення",
+      "displayMonth": "Календар на місяць",
+      "displayUpcoming": "Майбутні події",
       "groupCalendar": "Календар групи",
       "select": "Вибрати",
-      "selectCalendar": "Вибрати календар"
+      "selectCalendar": "Вибрати календар",
+      "tag": "Лише події з тегом",
+      "tagHelp": "Залиште порожнім, щоб показувати всі події."
     },
     "campaignProgressEdit": {
       "donateUrl": "URL для пожертви",
@@ -4979,7 +5016,7 @@
       "accent": "Акцент",
       "accentDesc": "Основний акцент — кнопки та виділення",
       "applyPaletteAria": "Застосувати запропоновану палітру кольорів",
-      "applySuggested": "Натисніть будь-яку палітру, щоб застосувати її миттєво",
+      "applySuggested": "Натисніть палітру, щоб завантажити її кольори, потім натисніть Save Palette, щоб застосувати її",
       "baseColors": "Базові кольори",
       "colorCombinationsPreview": "Color Combinations Preview",
       "colorValues": "Color Values",
@@ -5850,6 +5887,7 @@
       "created": "Створено",
       "editAssigned": "Edit Assigned",
       "editAssoc": "Edit Associated",
+      "notFound": "Завдання не знайдено",
       "notSpec": "Не вказано",
       "open": "Open",
       "opened": "Відкрито",

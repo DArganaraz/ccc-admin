@@ -2,8 +2,8 @@ import React, { memo, useCallback, useMemo } from "react";
 import { Stack, Box, Menu, MenuItem, Snackbar, Alert, TextField, Typography } from "@mui/material";
 import { Add as AddIcon, Album as AlbumIcon, MenuBook as MenuBookIcon, ArrowDropDown as ArrowDropDownIcon, FormatListBulleted as FormatListBulletedIcon, MusicNote as MusicNoteIcon } from "@mui/icons-material";
 import { EmptyState, RecordHeading, TextAction, VerbRow } from "../../components/ui";
-import { type GroupInterface, type PlanInterface, type TimeInterface, type PositionInterface, type AssignmentInterface } from "@churchapps/helpers";
-import { type PlanItemInterface, type PlanItemTimeInterface, hasPlansEditAccess } from "../../helpers";
+import { type GroupInterface, type TimeInterface, type PositionInterface, type AssignmentInterface } from "@churchapps/helpers";
+import { type PlanInterface, type PlanItemInterface, type PlanItemTimeInterface, type PlanTypeInterface, hasPlansEditAccess } from "../../helpers";
 import { ApiHelper, ArrayHelper, Locale, type PersonInterface, DateHelper } from "@churchapps/apphelper";
 import { useQuery } from "@tanstack/react-query";
 import { getProvider, type InstructionItem, type IProvider } from "@churchapps/content-providers";
@@ -12,6 +12,7 @@ import { LessonSelector } from "./LessonSelector";
 import { LessonHeaderSelector } from "./LessonHeaderSelector";
 import { PlanItem } from "./PlanItem";
 import { SaveTemplateDialog } from "./SaveTemplateDialog";
+import { LessonTrimConfirm, fillLabel } from "./LessonTrimConfirm";
 import { LessonPreview } from "./LessonPreview";
 import { DraggableWrapper } from "../../components/DraggableWrapper";
 import { RowDropZone } from "./RowDropZone";
@@ -41,7 +42,8 @@ function instructionToPlanItem(item: InstructionItem, providerId?: string, provi
   return {
     itemType,
     actionType: item.actionType,
-    relatedId: item.relatedId,
+    // Falls back to the item id so a TV paired to the plan type can match customized rows (GO! sets no relatedId).
+    relatedId: item.relatedId || item.id,
     label: item.label || "",
     description: item.content,
     seconds: item.seconds ?? 0,
@@ -55,6 +57,7 @@ function instructionToPlanItem(item: InstructionItem, providerId?: string, provi
 
 export const ServiceOrder = memo((props: Props) => {
   const [planItems, setPlanItems] = React.useState<PlanItemInterface[]>([]);
+  const [loaded, setLoaded] = React.useState(false);
   const hasPlansEdit = hasPlansEditAccess();
 
   const myMinistriesQuery = useQuery<GroupInterface[]>({
@@ -79,6 +82,8 @@ export const ServiceOrder = memo((props: Props) => {
   const [exclusions, setExclusions] = React.useState<PlanItemTimeInterface[]>([]);
   const [selectedServiceTimeId, setSelectedServiceTimeId] = React.useState<string>("");
   const [showSaveTemplate, setShowSaveTemplate] = React.useState(false);
+  const [showLessonTrim, setShowLessonTrim] = React.useState(false);
+  const [infoMessage, setInfoMessage] = React.useState<string | null>(null);
   const [mediaLookup, setMediaLookup] = React.useState<Record<string, ProviderMediaInfo>>({});
   const [sectionLabels, setSectionLabels] = React.useState<Record<string, SectionLabel>>({});
   const [settingTimes, setSettingTimes] = React.useState(false);
@@ -109,6 +114,8 @@ export const ServiceOrder = memo((props: Props) => {
         console.error("Error loading plan items:", error);
         setErrorMessage(Locale.label("plans.serviceOrder.loadError") || "Failed to load plan items");
         setPlanItems([]);
+      } finally {
+        setLoaded(true);
       }
     }
   }, [props.plan?.id]);
@@ -195,6 +202,16 @@ export const ServiceOrder = memo((props: Props) => {
 
   const hasAssociatedContent = !!(props.plan?.providerId && props.plan?.providerPlanId);
 
+  const planTypeQuery = useQuery<PlanTypeInterface>({
+    queryKey: ["/planTypes/" + props.plan?.planTypeId, "DoingApi"],
+    enabled: !!props.plan?.planTypeId && hasAssociatedContent && canEdit
+  });
+  const hasProviderRows = useMemo(() => {
+    const walk = (items: PlanItemInterface[]): boolean => items.some((i) => !!i.providerId || walk(i.children || []));
+    return walk(planItems);
+  }, [planItems]);
+  const showLessonTrimLink = canEdit && hasAssociatedContent && hasProviderRows && !!planTypeQuery.data?.id;
+
   const getContentPath = useCallback((): string | null => {
     if (!hasAssociatedContent) return null;
     return props.plan?.providerPlanId || null;
@@ -247,7 +264,13 @@ export const ServiceOrder = memo((props: Props) => {
 
       if (instructions?.items && instructions.items.length > 0) {
         // Convert InstructionItems to PlanItemInterface with providerId and providerPath
-        const planItemsFromInstructions = instructions.items.map((item, index) => instructionToPlanItem(item, currentProviderId, contentPath, [index]));
+        const converted = instructions.items.map((item, index) => instructionToPlanItem(item, currentProviderId, contentPath, [index]));
+
+        // File-based providers (GO!, Dropbox, ...) send a flat list with no header; wrap it in one
+        // named after the lesson so the customized plan still has a section bar to add into.
+        const planItemsFromInstructions = converted.some((item) => item.itemType === "header")
+          ? converted
+          : [{ itemType: "header", label: instructions.name || contentName || props.plan?.providerPlanName || "", children: converted }];
 
         // Keep top-level headers with their section children, but strip grandchildren (actions)
         const sectionsOnly = planItemsFromInstructions.map((item: PlanItemInterface): PlanItemInterface => ({
@@ -268,7 +291,9 @@ export const ServiceOrder = memo((props: Props) => {
       customizingRef.current = false;
     }
     return 0;
-  }, [hasAssociatedContent, getContentPath, provider, props.plan?.providerId, props.plan?.ministryId, loadData]);
+  }, [
+    hasAssociatedContent, getContentPath, provider, props.plan?.providerId, props.plan?.ministryId, props.plan?.providerPlanName, contentName, loadData
+  ]);
 
   const addHeader = useCallback(async () => {
     // If in preview mode, first customize (import sections only), then add header
@@ -625,6 +650,15 @@ export const ServiceOrder = memo((props: Props) => {
         ministryId={props.plan?.ministryId}
       />
 
+      {showLessonTrim && planTypeQuery.data && (
+        <LessonTrimConfirm
+          plan={props.plan}
+          planTypeName={planTypeQuery.data.name || ""}
+          onClose={() => setShowLessonTrim(false)}
+          onSaved={(message) => { setShowLessonTrim(false); setInfoMessage(message); planTypeQuery.refetch(); }}
+        />
+      )}
+
       {showSaveTemplate && canEdit && (
         <SaveTemplateDialog plan={props.plan} onClose={() => setShowSaveTemplate(false)} />
       )}
@@ -664,7 +698,9 @@ export const ServiceOrder = memo((props: Props) => {
           )}
         </Stack>
 
-        {planItems.length === 0 ? (
+        {!loaded ? (
+          <Typography variant="body2" color="text.secondary" data-testid="service-order-loading">{Locale.label("common.loading")}</Typography>
+        ) : planItems.length === 0 ? (
           showPreviewMode ? (
             <LessonPreview
               lessonItems={previewLessonItems}
@@ -681,7 +717,17 @@ export const ServiceOrder = memo((props: Props) => {
         ) : (
           renderPlanItems()
         )}
+        {showLessonTrimLink && (
+          <VerbRow sx={{ mt: 1 }}>
+            <TextAction small onClick={() => setShowLessonTrim(true)} data-testid="lesson-trim-link">
+              {fillLabel(Locale.label(planTypeQuery.data?.lessonTrim ? "plans.lessonTrim.replaceSaved" : "plans.lessonTrim.useForEvery"), planTypeQuery.data?.name || "")}
+            </TextAction>
+          </VerbRow>
+        )}
       </Box>
+      <Snackbar open={!!infoMessage} autoHideDuration={8000} onClose={() => setInfoMessage(null)} anchorOrigin={{ vertical: "bottom", horizontal: "center" }}>
+        <Alert severity="success" onClose={() => setInfoMessage(null)} data-testid="lesson-trim-saved">{infoMessage}</Alert>
+      </Snackbar>
       <Snackbar
         open={!!errorMessage}
         autoHideDuration={6000}

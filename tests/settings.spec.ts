@@ -1,6 +1,6 @@
 import { request as pwRequest, type APIRequestContext, type Page } from "@playwright/test";
-import { settingsTest as test, expect } from "./helpers/test-fixtures";
-import { dismissSendInviteIfPresent, confirmDelete, openPersonRow, personDetailsEditButton, SEED_PEOPLE } from "./helpers/fixtures";
+import { settingsTest as test, loggedInTest, expect } from "./helpers/test-fixtures";
+import { dismissSendInviteIfPresent, confirmDelete, openPersonRow, personDetailsEditButton, SEED_PEOPLE, personAddButton } from "./helpers/fixtures";
 import { login } from "./helpers/auth";
 import { navigateToSettings, navigateToRoles, navigateToForms, navigateTo, siblingNav } from "./helpers/navigation";
 import { STORAGE_STATE_PATH } from "./global-setup";
@@ -73,7 +73,7 @@ test.describe.serial("Settings Management", () => {
       await expect(churchName).toBeVisible({ timeout: 10000 });
       const originalName = await churchName.inputValue();
       await churchName.fill("Gracious Community Church");
-      const saveBtn = page.locator("button").getByText("Save");
+      const saveBtn = page.locator("#section-church-info").getByRole("button", { name: "Save" });
       await saveBtn.click();
       // Wait for the edit panel to close (back to read-only view) before re-opening.
       await expect(churchName).toHaveCount(0, { timeout: 10000 });
@@ -135,7 +135,7 @@ test.describe.serial("Settings Management", () => {
       await searchBox.fill("Jennifer Williams");
       const searchBtn = page.locator('[data-testid="search-button"]');
       await searchBtn.click();
-      const selectBtn = page.locator('[data-testid^="add-person-"]').first();
+      const selectBtn = personAddButton(page, "Jennifer Williams");
       await selectBtn.click();
       // Auto-save opens SendInviteDialog; dismiss before asserting on Members table.
       await dismissSendInviteIfPresent(page);
@@ -401,7 +401,7 @@ test.describe.serial("Settings Management", () => {
       await personSearch.fill("Dorothy Jackson");
       const searchBtn = page.locator('[id="searchButton"]');
       await searchBtn.click();
-      const addBtn = page.locator('[data-testid^="add-person-"]').first();
+      const addBtn = personAddButton(page, "Dorothy Jackson");
       await addBtn.click();
 
       const validatedAddition = page.locator("td a").getByText("Dorothy Jackson");
@@ -415,7 +415,8 @@ test.describe.serial("Settings Management", () => {
       await expect(membersTab).toBeVisible({ timeout: 10000 });
       await membersTab.click();
 
-      const removeBtn = page.locator("button").getByText("Remove").last();
+      // Members are listed by last name, so Dorothy is not necessarily the last row (the form's creator can follow her).
+      const removeBtn = page.locator("tr").filter({ has: page.locator("td a").getByText("Dorothy Jackson") }).locator("button").getByText("Remove");
       await removeBtn.click();
       await confirmDelete(page);
       const validatedDeletion = page.locator("td a").getByText("Dorothy Jackson");
@@ -503,10 +504,66 @@ test.describe.serial("Settings Management", () => {
       await filter.fill("");
       await expect(sections).toHaveCount(total);
     });
+
+    test("roles list shows how many people are in each role", async () => {
+      await page.goto("/settings/roles");
+      const table = page.locator("#roleMemberTable");
+      await expect(table.locator("thead")).toContainText("Members", { timeout: 15000 });
+      await expect(table.locator("tbody tr").filter({ hasText: "Everyone" })).toContainText("All users");
+      const volunteer = table.locator("tbody tr").filter({ hasText: "Workflow Volunteer" });
+      await expect(volunteer.getByTestId("role-member-count")).toHaveText("1");
+      // Demo seed: demo@, tester@ and twofactor@b1.church are Domain Admins.
+      const admins = table.locator("tbody tr").filter({ hasText: "Domain Admins" });
+      await expect(admins.getByTestId("role-member-count")).toHaveText("3");
+    });
+
+    test("role permission groups show how many permissions are checked", async () => {
+      await page.goto("/settings/role/ROL00000011");
+      const donations = page.locator("#rolePermissionsBox .MuiAccordion-root").filter({ has: page.locator(".MuiAccordionSummary-root", { hasText: "Donations" }) });
+      const count = donations.getByTestId("role-permission-section-count");
+      await expect(count).toHaveText("2 of 5", { timeout: 15000 });
+      const tasks = page.locator("#rolePermissionsBox .MuiAccordion-root").filter({ has: page.locator(".MuiAccordionSummary-root", { hasText: "Tasks" }) });
+      await expect(tasks.getByTestId("role-permission-section-count")).toHaveText("0 of 3");
+
+      // The count follows the checkboxes without a reload.
+      await donations.locator(".MuiAccordionSummary-root").click();
+      const editDonations = page.getByTestId("role-permission-checkbox-Donations-Edit").locator("input");
+      const saved = (method: string) => page.waitForResponse(r => r.url().includes("/rolepermissions") && r.request().method() === method);
+      const posted = saved("POST");
+      await editDonations.check();
+      await posted;
+      await expect(count).toHaveText("3 of 5");
+      const deleted = saved("DELETE");
+      await editDonations.uncheck();
+      await deleted;
+      await expect(count).toHaveText("2 of 5");
+    });
   });
 
   test.describe.serial("Region", () => {
     test.describe.configure({ retries: 0 });
+
+    // The phone-format tests save a local number on Donald; later specs (texting STOP replies)
+    // match him by his seeded mobile, so put it back once this group is done.
+    const API = process.env.API_BASE || "http://localhost:8084";
+    const DONALD_ID = "PER00000080";
+    let regionCtx: APIRequestContext;
+    let regionAuth: { headers: { Authorization: string } };
+    let originalMobile: string | undefined;
+
+    test.beforeAll(async () => {
+      regionCtx = await pwRequest.newContext();
+      const body = await (await regionCtx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+      const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+      regionAuth = { headers: { Authorization: "Bearer " + uc.jwt } };
+      originalMobile = (await (await regionCtx.get(`${API}/membership/people/${DONALD_ID}`, regionAuth)).json()).contactInfo?.mobilePhone;
+    });
+
+    test.afterAll(async () => {
+      const person = await (await regionCtx.get(`${API}/membership/people/${DONALD_ID}`, regionAuth)).json();
+      await regionCtx.post(`${API}/membership/people`, { ...regionAuth, data: [{ ...person, contactInfo: { ...person.contactInfo, mobilePhone: originalMobile } }] });
+      await regionCtx.dispose();
+    });
 
     const MONTH = "(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)";
     const DAY_FIRST = new RegExp(`^\\d{1,2} ${MONTH} \\d{4}$`);
@@ -519,7 +576,7 @@ test.describe.serial("Settings Management", () => {
       await page.locator('[data-testid="settings-region"] [data-testid="small-button-edit"]').dispatchEvent("click");
       await page.locator('[data-testid="region-select"]').click();
       await page.locator(`[data-testid="region-option-${region}"]`).click();
-      await page.locator("button").getByText("Save").click();
+      await page.locator('[data-testid="settings-region"]').getByRole("button", { name: "Save" }).click();
       await expect(page.locator('[data-testid="region-select"]')).toHaveCount(0, { timeout: 10000 });
     };
 
@@ -547,10 +604,10 @@ test.describe.serial("Settings Management", () => {
     const choosePhoneFormat = async (format: "international" | "local") => {
       await page.goto("/settings#region");
       await expect(page.locator('[data-testid="settings-section-region"]')).toHaveClass(/Mui-selected/, { timeout: 15000 });
-      await page.locator('[data-testid="small-button-edit"]').first().dispatchEvent("click");
+      await page.locator('[data-testid="settings-region"] [data-testid="small-button-edit"]').dispatchEvent("click");
       await page.locator('[data-testid="phone-format-select"]').click();
       await page.locator(`[data-testid="phone-format-option-${format}"]`).click();
-      await page.locator("button").getByText("Save").click();
+      await page.locator('[data-testid="settings-region"]').getByRole("button", { name: "Save" }).click();
       await expect(page.locator('[data-testid="phone-format-select"]')).toHaveCount(0, { timeout: 10000 });
     };
 
@@ -617,6 +674,16 @@ test.describe.serial("Settings Management", () => {
 
 });
 
+// One custom field reads in the singular on the Settings landing page.
+loggedInTest.describe("Settings custom field count", () => {
+  loggedInTest("one custom field reads in the singular", async ({ page }) => {
+    await page.route(/\/membership\/personfields(\?|$)/, (route) => route.fulfill({ json: [{ id: "PF1", name: "Shirt Size", fieldType: "text" }] }));
+    await page.goto("/settings");
+    await expect(page.getByText(/^1 custom fields?$/)).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText("1 custom field", { exact: true })).toBeVisible();
+  });
+});
+
 // ChurchAppsSupport#1180: typing a domain and clicking Save (without +) closed the panel and saved nothing.
 test.describe("Settings domains save a typed name", () => {
   const DOMAIN = "example-1180.org";
@@ -657,6 +724,200 @@ test.describe("Settings domains save a typed name", () => {
   });
 });
 
+// ChurchAppsSupport#1419: removing two domains takes two slow writes (each waits on the
+// proxy sync, ~10s), which outlasted the section's save timeout. The save landed but the
+// editor stayed open and the list kept showing the old domains.
+test.describe.serial("Settings domains slow saves", () => {
+  // Both tests edit the same church domain list.
+  test.describe.configure({ retries: 0 });
+  const DOMAINS = ["www.example-1419.org", "example-1419.org"];
+  const SAVE_MS = 45000;
+  // Prod/demo domain writes each wait on the Caddy sync (~10s). The local Api syncs fast,
+  // so hold each domain write in the browser to match.
+  const SYNC_MS = 8000;
+
+  test("removing two domains closes the editor and clears the list", async ({ page }) => {
+    test.setTimeout(180000);
+    await page.route(/\/membership\/domains(\/|$)/, async (route) => {
+      const method = route.request().method();
+      if (method !== "DELETE" && method !== "POST") return route.continue();
+      const response = await route.fetch();
+      await new Promise((resolve) => setTimeout(resolve, SYNC_MS));
+      await route.fulfill({ response });
+    });
+    await page.locator('[data-testid="settings-section-domains"]').click();
+    const section = page.locator('[data-testid="settings-domains"]');
+    await expect(section).toBeVisible({ timeout: 15000 });
+
+    const input = section.locator('input[name="domainName"]');
+    const save = () => section.locator("button").getByText("Save").click();
+    // The editor input shows before its domain list loads, so wait for that load.
+    const openEdit = async () => {
+      const loaded = page.waitForResponse((r) => r.request().method() === "GET" && new URL(r.url()).pathname.endsWith("/membership/domains"));
+      await section.locator('[data-testid="small-button-edit"]').dispatchEvent("click");
+      await loaded;
+      await expect(input).toBeVisible({ timeout: 10000 });
+    };
+
+    // Add both domains in one save.
+    await openEdit();
+    for (const name of DOMAINS) {
+      // reset-demo keeps domains, so a run that died mid-way leaves them behind.
+      if (await section.getByText(name, { exact: true }).count()) continue;
+      await input.fill(name);
+      await section.getByRole("button", { name: "Add" }).click();
+    }
+    await save();
+    await expect(input).toHaveCount(0, { timeout: SAVE_MS });
+    for (const name of DOMAINS) await expect(section.getByText(name, { exact: true })).toBeVisible();
+
+    // Remove both: two DELETEs, each slow.
+    await openEdit();
+    for (const name of DOMAINS) await expect(section.getByText(name, { exact: true })).toBeVisible({ timeout: 10000 });
+    const deleteButtons = section.getByRole("button", { name: "Delete" });
+    while (await deleteButtons.count()) await deleteButtons.first().click();
+    await save();
+
+    await expect(input).toHaveCount(0, { timeout: SAVE_MS });
+    for (const name of DOMAINS) await expect(section.getByText(name, { exact: true })).toHaveCount(0, { timeout: 15000 });
+    await expect(section.getByText("No custom domains")).toBeVisible({ timeout: 15000 });
+  });
+
+  test("cancel during a slow save leaves the reopened editor usable", async ({ page }) => {
+    test.setTimeout(180000);
+    const DOMAIN = "cancel-1419.org";
+    const HOLD_MS = 10000;
+    const SAVE_MS = 40000;
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let holding = true;
+    await page.route(/\/membership\/domains(\/|$)/, async (route) => {
+      const method = route.request().method();
+      if (!holding || (method !== "DELETE" && method !== "POST")) return route.continue();
+      holding = false;
+      const response = await route.fetch();
+      await new Promise((resolve) => setTimeout(resolve, HOLD_MS));
+      await route.fulfill({ response });
+      release();
+    });
+    await page.locator('[data-testid="settings-section-domains"]').click();
+    const section = page.locator('[data-testid="settings-domains"]');
+    await expect(section).toBeVisible({ timeout: 15000 });
+
+    const input = section.locator('input[name="domainName"]');
+    const saveButton = section.getByRole("button", { name: "Save" });
+    // The editor input shows before its domain list loads, so wait for that load.
+    const openEdit = async () => {
+      const loaded = page.waitForResponse((r) => r.request().method() === "GET" && new URL(r.url()).pathname.endsWith("/membership/domains"));
+      await section.locator('[data-testid="small-button-edit"]').dispatchEvent("click");
+      await loaded;
+      await expect(input).toBeVisible({ timeout: 10000 });
+    };
+
+    await openEdit();
+    // A run that died before its cleanup leaves the domain behind; the held write is then its DELETE.
+    const leftover = section.locator("tr", { hasText: DOMAIN });
+    if (await leftover.count()) await leftover.getByRole("button").click();
+    else await input.fill(DOMAIN);
+    await saveButton.click();
+    await expect(saveButton).toBeDisabled();
+    await section.getByRole("button", { name: "Cancel" }).click();
+    await expect(input).toHaveCount(0, { timeout: 10000 });
+
+    await openEdit();
+    await expect(saveButton).toBeEnabled();
+
+    // The cancelled save's late result must not close this editor or disable Save.
+    await held;
+    await page.waitForTimeout(1000);
+    await expect(input).toBeVisible();
+    await expect(saveButton).toBeEnabled();
+
+    // Clean up: the held write landed, so remove the domain if it is there.
+    await page.unroute(/\/membership\/domains(\/|$)/);
+    await page.reload();
+    await page.locator('[data-testid="settings-section-domains"]').click();
+    await expect(section).toBeVisible({ timeout: 15000 });
+    await openEdit();
+    const row = section.locator("tr", { hasText: DOMAIN });
+    if (await row.count()) {
+      await row.getByRole("button").click();
+      await saveButton.click();
+      await expect(input).toHaveCount(0, { timeout: SAVE_MS });
+      await expect(section.getByText(DOMAIN)).toHaveCount(0, { timeout: SAVE_MS });
+    }
+  });
+});
+
+// ChurchAppsSupport#1296: FreePlay schedules use the church's stored time zone, so Church Information must show and change it.
+test.describe("Church information time zone", () => {
+  test("time zone can be changed and restored", async ({ page }) => {
+    const section = page.locator('[data-testid="settings-section-church-info"]');
+    await expect(section).toBeVisible({ timeout: 15000 });
+    const zoneRow = page.getByTestId("church-time-zone");
+    const churchName = page.locator('[name="churchName"]');
+    const original = (await zoneRow.count()) ? (await zoneRow.textContent())?.trim() || "" : "";
+    const target = original === "America/Chicago" ? "America/Denver" : "America/Chicago";
+
+    const saveZone = async (zone: string) => {
+      await page.locator('[data-testid="small-button-edit"]').first().dispatchEvent("click");
+      await expect(churchName).toBeVisible({ timeout: 10000 });
+      await page.locator("#churchTimeZone").click();
+      if (zone) await page.getByRole("option", { name: zone, exact: true }).click();
+      else await page.getByRole("option").first().click();
+      const save = page.waitForResponse(r => r.url().includes("/membership/churches") && r.request().method() === "POST");
+      await page.locator("#section-church-info").getByRole("button", { name: "Save" }).click();
+      await save;
+      await expect(churchName).toHaveCount(0, { timeout: 10000 });
+    };
+
+    await saveZone(target);
+    await expect(zoneRow).toHaveText(target);
+
+    // Put the original zone back so the next run still proves a change.
+    await saveZone(original);
+    if (original) await expect(zoneRow).toHaveText(original);
+    else await expect(zoneRow).toHaveCount(0);
+  });
+});
+
+// The provider is stored as an id (the demo seed has "clearstream"); the page shows its name.
+test.describe("Texting provider name", () => {
+  test("the Texting section shows the provider's display name", async ({ page }) => {
+    await page.goto("/settings");
+    await expect(page.getByTestId("settings-section-texting")).toContainText("Clearstream", { timeout: 15000 });
+    await expect(page.locator("#section-texting")).toContainText("Clearstream");
+  });
+});
+
+// The Lessons Admin preset sent its permission under the wrong key, so the role was created with nothing checked.
+test.describe("Predefined roles", () => {
+  test("Add Lessons Admin role grants Edit Schedules", async ({ page }) => {
+    await page.goto("/settings/roles");
+    await page.getByTestId("add-role-button").click();
+    const created = page.waitForResponse(r => r.url().includes("/membership/roles") && r.request().method() === "POST");
+    const perms = page.waitForResponse(r => r.url().includes("/membership/rolepermissions") && r.request().method() === "POST");
+    await page.getByTestId("add-predefined-role-lessons-admin").click();
+    await confirmDelete(page);
+    const roleId = (await (await created).json())[0].id as string;
+    await perms;
+    try {
+      await page.goto("/settings/role/" + roleId);
+      const lessons = page.locator("#rolePermissionsBox .MuiAccordion-root").filter({ has: page.locator(".MuiAccordionSummary-root", { hasText: "Lessons" }) });
+      await expect(lessons.getByTestId("role-permission-section-count")).toHaveText("1 of 2", { timeout: 15000 });
+      await lessons.locator(".MuiAccordionSummary-root").click();
+      await expect(page.getByTestId("role-permission-checkbox-Schedules-Edit").locator("input")).toBeChecked();
+    } finally {
+      await page.goto("/settings/roles");
+      await page.locator("#roleMemberTable tbody tr").filter({ hasText: "Lessons Admin" }).getByTestId("edit-role-button").first().click();
+      await page.locator("button").getByText("Delete").click();
+      const deleted = page.waitForResponse(r => r.url().includes("/membership/roles/" + roleId) && r.request().method() === "DELETE");
+      await confirmDelete(page);
+      await deleted;
+    }
+  });
+});
+
 // ChurchAppsSupport#1181: merge-field chips on the email template editor must insert at the cursor, and editing mid-text must not eat the rest.
 const openNewTemplate = async (page: Page) => {
   await page.goto("/settings/email-templates");
@@ -667,6 +928,11 @@ const openNewTemplate = async (page: Page) => {
 const chipsAfter = (page: Page, caption: string) => page.locator("div", { has: page.getByText(caption, { exact: true }) }).last();
 
 test.describe("Email template editor merge fields", () => {
+  test("subject hint uses the double-brace merge fields", async ({ page }) => {
+    await openNewTemplate(page);
+    await expect(page.getByLabel("Subject", { exact: true })).toHaveAttribute("placeholder", "e.g. Hello {{firstName}}, welcome to {{churchName}}");
+  });
+
   test("subject chip inserts at the cursor", async ({ page }) => {
     await openNewTemplate(page);
     const subject = page.getByLabel("Subject", { exact: true });
@@ -686,6 +952,29 @@ test.describe("Email template editor merge fields", () => {
     await expect(body).toHaveText("Hello {{firstName}} welcome");
     await page.getByRole("button", { name: "Preview" }).click();
     await expect(page.frameLocator("iframe[title='Email preview']").locator("body")).toContainText("Hello John welcome");
+  });
+
+  // ChurchAppsSupport#1486: gift merge fields for emails sent by a donation-triggered workflow.
+  test("gift chips insert into the body and preview with a sample gift", async ({ page }) => {
+    await openNewTemplate(page);
+    const subjectChips = chipsAfter(page, "Insert merge field into subject:");
+    await expect(subjectChips.getByText("Amount", { exact: true })).toBeVisible();
+    await expect(subjectChips.getByText("Receipt", { exact: true })).toHaveCount(0);
+    await expect(page.getByTestId("gift-merge-hint")).toHaveText("Amount, Gift Date, Fund and Receipt fill in only when a workflow started by a Donation trigger sends this template.");
+
+    const body = page.locator(".editor-input[contenteditable='true']").first();
+    await body.click();
+    await page.keyboard.type("Thanks for ");
+    const bodyChips = chipsAfter(page, "Insert merge field into body:");
+    await bodyChips.getByText("Amount", { exact: true }).click();
+    await page.keyboard.type(" to ");
+    await bodyChips.getByText("Fund", { exact: true }).click();
+    await bodyChips.getByText("Receipt", { exact: true }).click();
+    await expect(body).toHaveText("Thanks for {{amount}} to {{fund}}{{receipt}}");
+    await page.getByRole("button", { name: "Preview" }).click();
+    const preview = page.frameLocator("iframe[title='Email preview']").locator("body");
+    await expect(preview).toContainText("Thanks for $50.00 to General Fund");
+    await expect(preview.locator("table")).toContainText("Missions");
   });
 
   test("backspace in the middle of the body only removes one character", async ({ page }) => {
@@ -757,7 +1046,7 @@ test.describe.serial("Volunteer signup next week only", () => {
     await section.getByTestId("small-button-edit").dispatchEvent("click");
     await page.getByTestId("volunteer-signup-next-only-switch").locator("input").check();
     const save = page.waitForResponse((r) => r.url().includes("/settings") && r.request().method() === "POST" && r.status() === 200);
-    await page.getByRole("button", { name: "Save" }).click();
+    await section.getByRole("button", { name: "Save" }).click();
     await save;
     await expect(section).toContainText("Only the next week of each plan type", { timeout: 10000 });
 
@@ -771,7 +1060,7 @@ test.describe.serial("Volunteer signup next week only", () => {
     await section.getByTestId("small-button-edit").dispatchEvent("click");
     await page.getByTestId("volunteer-signup-next-only-switch").locator("input").uncheck();
     const del = page.waitForResponse((r) => r.url().includes("/settings/") && r.request().method() === "DELETE");
-    await page.getByRole("button", { name: "Save" }).click();
+    await section.getByRole("button", { name: "Save" }).click();
     await del;
     await expect(section).toContainText("All upcoming weeks", { timeout: 10000 });
 
@@ -828,7 +1117,7 @@ test.describe.serial("Giving privacy on person records", () => {
     await settings.getByTestId("small-button-edit").dispatchEvent("click");
     await page.getByTestId("giving-privacy-hide-switch").locator("input").check();
     const save = page.waitForResponse((r) => r.url().includes("/settings") && r.request().method() === "POST" && r.status() === 200);
-    await page.getByRole("button", { name: "Save" }).click();
+    await settings.getByRole("button", { name: "Save" }).click();
     await save;
     await expect(settings).toContainText("Hidden until clicked", { timeout: 10000 });
 
@@ -853,7 +1142,7 @@ test.describe.serial("Giving privacy on person records", () => {
     await settings.getByTestId("small-button-edit").dispatchEvent("click");
     await page.getByTestId("giving-privacy-hide-switch").locator("input").uncheck();
     const del = page.waitForResponse((r) => r.url().includes("/settings/") && r.request().method() === "DELETE");
-    await page.getByRole("button", { name: "Save" }).click();
+    await settings.getByRole("button", { name: "Save" }).click();
     await del;
     await expect(settings).toContainText("Shown", { timeout: 10000 });
 
@@ -914,5 +1203,79 @@ test.describe("Region list includes Hungary", () => {
     }
     await expect(section).toContainText(us.sample, { timeout: 10000 });
     await expect(section).not.toContainText(hu.sample);
+  });
+});
+
+// ChurchAppsSupport#1450: a church with no online giving provider can still pick its church currency (PHP here).
+// The demo church has a Stripe gateway, so the gateway list is hidden from the page to stand in for Provider = None;
+// the real gateway is never touched and the saved "currency" setting is removed afterwards.
+test.describe.serial("Church currency without a giving provider", () => {
+  test.describe.configure({ retries: 0 });
+  const API = process.env.API_BASE || "http://localhost:8084";
+  let ctx: APIRequestContext;
+  let auth: { headers: { Authorization: string } };
+
+  const deleteCurrencySetting = async () => {
+    const settings = await (await ctx.get(`${API}/membership/settings`, auth)).json();
+    for (const s of (settings || []).filter((r: any) => r.keyName === "currency")) await ctx.delete(`${API}/membership/settings/${s.id}`, auth);
+  };
+  const openGivingSettings = async (page: Page) => {
+    await page.route(/\/giving\/gateways$/, (route) => (route.request().method() === "GET" ? route.fulfill({ json: [] }) : route.continue()));
+    await page.goto("/settings");
+    await page.locator('[data-testid="settings-section-giving"]').click();
+    const section = page.locator('[data-testid="settings-giving"]');
+    await expect(section).toBeVisible({ timeout: 15000 });
+    await section.locator('[data-testid="small-button-edit"]').dispatchEvent("click");
+    return section;
+  };
+
+  test.beforeAll(async () => {
+    ctx = await pwRequest.newContext();
+    const loginRes = await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+    expect(loginRes.ok()).toBeTruthy();
+    const body = await loginRes.json();
+    const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+    auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+    await deleteCurrencySetting();
+  });
+
+  test.afterAll(async () => {
+    await deleteCurrencySetting();
+    await ctx.dispose();
+  });
+
+  // ChurchAppsSupport#1483: with nothing saved, the Currency starts on the church country's currency instead of USD.
+  test("with no saved currency the Currency starts on the church country's currency", async ({ page }) => {
+    await page.route(/\/membership\/churches\/CHU00000001\?include=permissions/, async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({ response, json: { ...(await response.json()), country: "Kenya" } });
+    });
+    const section = await openGivingSettings(page);
+    await expect(section.getByTestId("church-currency-select").getByRole("combobox")).toHaveText("KES", { timeout: 10000 });
+  });
+
+  test("Provider None shows a Currency dropdown and saves PHP as the church currency", async ({ page }) => {
+    const section = await openGivingSettings(page);
+    await expect(section.getByRole("combobox").first()).toBeVisible({ timeout: 10000 });
+    await expect(section.getByLabel("Public Key")).toHaveCount(0);
+    const currency = section.getByTestId("church-currency-select").getByRole("combobox");
+    await expect(currency).toHaveText("USD", { timeout: 10000 });
+    await expect(section.getByText("The currency your church records gifts in.")).toBeVisible();
+
+    await currency.click();
+    await page.getByRole("option", { name: "PHP", exact: true }).click();
+    await expect(currency).toHaveText("PHP");
+    const saved = page.waitForResponse((r) => /\/membership\/settings$/.test(r.url()) && r.request().method() === "POST");
+    await section.locator("button").getByText("Save").click();
+    const rows = await (await saved).json();
+    expect(rows.find((r: any) => r.keyName === "currency")?.value).toBe("php");
+
+    const reopened = await openGivingSettings(page);
+    await expect(reopened.getByTestId("church-currency-select").getByRole("combobox")).toHaveText("PHP", { timeout: 10000 });
+  });
+
+  test("the church currency setting is public so donors and donation-only staff can read it", async () => {
+    const res = await ctx.get(`${API}/membership/settings/public/CHU00000001`);
+    expect((await res.json()).currency).toBe("php");
   });
 });

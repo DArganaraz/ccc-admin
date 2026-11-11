@@ -1,9 +1,44 @@
-import type { Page } from "@playwright/test";
+import { request, type Page } from "@playwright/test";
 import { siteTest as test, loggedInTest, expect } from "./helpers/test-fixtures";
 import { confirmDelete } from "./helpers/fixtures";
 import { login } from "./helpers/auth";
 import { navigateToSite, navigateToCalendars, siblingNav } from "./helpers/navigation";
 import { STORAGE_STATE_PATH } from "./global-setup";
+
+// Adds a page from the pages list and opens it in the editor.
+const openNewPageEditor = async (page: Page, title: string) => {
+  const addPageButton = page.locator('[data-testid="add-page-button"]');
+  await expect(addPageButton).toBeVisible({ timeout: 30000 });
+  await addPageButton.click();
+  await page.locator('[name="title"]').fill(title);
+  const pagePost = page.waitForResponse(r => r.url().includes("/content/pages") && r.request().method() === "POST", { timeout: 15000 });
+  await page.locator("button").getByText("Save").click();
+  await pagePost;
+  const newPageDialog = page.locator('div[role="dialog"]:has-text("New Page")');
+  // The dialog normally closes itself after Save; only cancel it if it is still up, and tolerate it closing mid-click.
+  if (await newPageDialog.isVisible()) await newPageDialog.locator("button").getByText("Cancel").click({ timeout: 2000 }).catch(() => {});
+  await expect(newPageDialog).toHaveCount(0, { timeout: 10000 });
+  const row = page.locator("tr").filter({ hasText: title }).first();
+  await expect(row).toBeVisible({ timeout: 10000 });
+  await row.locator('[data-testid="edit-content-button"]').click();
+  await expect(page.locator('[data-testid="publish-button"]')).toBeVisible({ timeout: 15000 });
+};
+
+// Drops a section onto the page and fills it from a section template.
+const addTemplateSection = async (page: Page, key: string) => {
+  const section = page.locator('[data-testid="draggable-element-section"]');
+  const sectionVisible = await section.isVisible({ timeout: 500 }).catch(() => false);
+  if (!sectionVisible) await page.locator('[data-testid="content-editor-add-button"]').click();
+  await expect(section).toBeVisible({ timeout: 10000 });
+  await section.hover();
+  await page.mouse.down();
+  await page.mouse.move(-10, -10);
+  await page.locator('div [data-testid="droppable-area"]').first().hover();
+  await page.mouse.up();
+  const treePost = page.waitForResponse(r => r.url().includes("/content/sections/tree") && r.request().method() === "POST", { timeout: 15000 });
+  await page.locator(`[data-testid="template-${key}"]`).click();
+  expect((await treePost).status()).toBe(200);
+};
 
 // ZACCHAEUS/ZEBEDEE are the names used for testing. If you see Zacchaeus or Zebedee entered anywhere, it is a result of these tests.
 test.describe("Website Management", () => {
@@ -88,7 +123,7 @@ test.describe("Website Management", () => {
     });
 
     test("should edit page title", async () => {
-      const settingsBtn = page.locator('[data-testid="page-settings-button"]').last();
+      const settingsBtn = page.locator("tr").filter({ hasText: "Zacchaeus Test Page" }).first().locator('[data-testid="page-settings-button"]');
       await settingsBtn.click();
       const name = page.locator('[name="title"]');
       await name.fill("Zebedee Test Page");
@@ -100,7 +135,7 @@ test.describe("Website Management", () => {
     });
 
     test("should cancel editing page title", async () => {
-      const settingsBtn = page.locator('[data-testid="page-settings-button"]').last();
+      const settingsBtn = page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="page-settings-button"]');
       await settingsBtn.click();
       const name = page.locator('[name="title"]');
       await expect(name).toHaveCount(1);
@@ -138,7 +173,7 @@ test.describe("Website Management", () => {
     });
 
     test("should edit page content", async () => {
-      const editBtn = page.locator('[data-testid="edit-content-button"]').last();
+      const editBtn = page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="edit-content-button"]');
       await editBtn.click();
       const addBtn = page.locator('[data-testid="content-editor-add-button"]');
       // Guard against accidental double-click closing the toggle.
@@ -181,7 +216,7 @@ test.describe("Website Management", () => {
     });
 
     test("should add a section from a template", async () => {
-      const editBtn = page.locator('[data-testid="edit-content-button"]').last();
+      const editBtn = page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="edit-content-button"]');
       await editBtn.click();
       const addBtn = page.locator('[data-testid="content-editor-add-button"]');
       const ensurePanelOpen = async () => {
@@ -210,7 +245,7 @@ test.describe("Website Management", () => {
     });
 
     test("should toggle per-device visibility on an element", async () => {
-      const editBtn = page.locator('[data-testid="edit-content-button"]').last();
+      const editBtn = page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="edit-content-button"]');
       await editBtn.click();
       const textElement = page.locator("p").getByText("Zacchaeus Test Text");
       await expect(textElement).toBeVisible({ timeout: 10000 });
@@ -236,7 +271,7 @@ test.describe("Website Management", () => {
     });
 
     test("should publish, discard draft changes, and turn off publishing", async () => {
-      const editBtn = page.locator('[data-testid="edit-content-button"]').last();
+      const editBtn = page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="edit-content-button"]');
       await editBtn.click();
       const publishBtn = page.locator('[data-testid="publish-button"]');
       await expect(publishBtn).toBeVisible({ timeout: 10000 });
@@ -301,7 +336,7 @@ test.describe("Website Management", () => {
     });
 
     test("should click to add a section via the divider", async () => {
-      const editBtn = page.locator('[data-testid="edit-content-button"]').last();
+      const editBtn = page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="edit-content-button"]');
       await editBtn.click();
       const divider = page.locator('[data-testid="add-section-divider"]').first();
       await expect(divider).toBeVisible({ timeout: 10000 });
@@ -319,7 +354,7 @@ test.describe("Website Management", () => {
     });
 
     test("should click an element card to insert it", async () => {
-      const editBtn = page.locator('[data-testid="edit-content-button"]').last();
+      const editBtn = page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="edit-content-button"]');
       await editBtn.click();
       // Select the existing text element so the insert lands right after it.
       const textElement = page.locator("p").getByText("Zacchaeus Test Text").first();
@@ -356,10 +391,13 @@ test.describe("Website Management", () => {
       expect(buttonResponse.status()).toBe(200);
       expect(buttonResponse.request().postDataJSON()[0].elementType).toBe("buttonLink");
       await expect(page.locator("button").getByText("Zacchaeus Button")).toBeVisible({ timeout: 10000 });
+      // The canvas hover label, panel title and breadcrumb all use the same readable element name.
+      const buttonWrapper = page.locator(".elementWrapper[data-el-label]").filter({ hasText: "Zacchaeus Button" }).last();
+      await expect(buttonWrapper).toHaveAttribute("data-el-label", "Button Link", { timeout: 10000 });
     });
 
     test("should warn before discarding unsaved element edits", async () => {
-      const editBtn = page.locator('[data-testid="edit-content-button"]').last();
+      const editBtn = page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="edit-content-button"]');
       await editBtn.click();
       const textElement = page.locator("p").getByText("Zacchaeus Click Added").first();
       await expect(textElement).toBeVisible({ timeout: 10000 });
@@ -389,7 +427,7 @@ test.describe("Website Management", () => {
     });
 
     test("should manage sections from the hover toolbar", async () => {
-      const editBtn = page.locator('[data-testid="edit-content-button"]').last();
+      const editBtn = page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="edit-content-button"]');
       await editBtn.click();
       const sectionWrapper = page.locator(".sectionEditWrapper").filter({ hasText: "Zacchaeus Click Added" }).first();
       await expect(sectionWrapper).toBeVisible({ timeout: 10000 });
@@ -421,7 +459,7 @@ test.describe("Website Management", () => {
     });
 
     test("should support keyboard shortcuts", async () => {
-      const editBtn = page.locator('[data-testid="edit-content-button"]').last();
+      const editBtn = page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="edit-content-button"]');
       await editBtn.click();
       const textElement = page.locator("p").getByText("Zacchaeus Click Added").first();
       await expect(textElement).toBeVisible({ timeout: 10000 });
@@ -442,7 +480,7 @@ test.describe("Website Management", () => {
     });
 
     test("should verify done button functionality", async () => {
-      const editBtn = page.locator('[data-testid="edit-content-button"]').last();
+      const editBtn = page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="edit-content-button"]');
       await editBtn.click();
       await expect(page).toHaveURL(/\/site\/pages\/[^/]+/);
       const doneBtn = page.locator('[data-testid="content-editor-done-button"]');
@@ -452,7 +490,7 @@ test.describe("Website Management", () => {
     });
 
     test("should explain the publish status pill", async () => {
-      await page.locator('[data-testid="edit-content-button"]').last().click();
+      await page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="edit-content-button"]').click();
       const pill = page.locator('[data-testid="publish-status-pill"]');
       await expect(pill).toBeVisible({ timeout: 30000 });
       await pill.hover();
@@ -460,7 +498,7 @@ test.describe("Website Management", () => {
     });
 
     test("should cancel deleting page", async () => {
-      const settingsBtn = page.locator('[data-testid="page-settings-button"]').last();
+      const settingsBtn = page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="page-settings-button"]');
       await settingsBtn.click();
       const deleteBtn = page.locator("button").getByText("Delete");
       await deleteBtn.click();
@@ -471,7 +509,7 @@ test.describe("Website Management", () => {
     });
 
     test("should delete page", async () => {
-      const settingsBtn = page.locator('[data-testid="page-settings-button"]').last();
+      const settingsBtn = page.locator("tr").filter({ hasText: "Zebedee Test Page" }).first().locator('[data-testid="page-settings-button"]');
       await settingsBtn.click();
       const deleteBtn = page.locator("button").getByText("Delete");
       await deleteBtn.click();
@@ -491,6 +529,8 @@ test.describe("Website Management", () => {
       // "Plan Your Visit" (/visit) is actually new. The detail view flags each existing
       // page — just confirm the indicator shows up.
       await expect(page.getByText("Already exists", { exact: true }).first()).toBeVisible({ timeout: 10000 });
+      // Demo data already has the Sermons and Give links, so the preview lists no nav links to add.
+      await expect(page.getByText(/These links will be added to your navigation menu/)).toHaveCount(0);
       const treePost = page.waitForResponse(r => r.url().includes("/content/sections/tree") && r.request().method() === "POST", { timeout: 20000 });
       await page.locator('[data-testid="site-template-create-button"]').click();
       expect((await treePost).status()).toBe(200);
@@ -540,7 +580,12 @@ test.describe("Website Management", () => {
       const blankTemplate = page.locator('[data-testid="template-blank"]');
       await expect(blankTemplate).toBeVisible({ timeout: 10000 });
       await blankTemplate.click();
+      // Clicking an element card before the new section is loaded reopens the layout picker instead.
+      const newSectionPost = page.waitForResponse(r => r.url().endsWith("/content/sections") && r.request().method() === "POST", { timeout: 15000 });
+      const treeReload = page.waitForResponse(r => r.url().includes("/content/pages/") && r.url().includes("/tree?id=") && r.request().method() === "GET", { timeout: 15000 });
       await page.locator("button").getByText("Save").click();
+      expect((await newSectionPost).status()).toBe(200);
+      await treeReload;
 
       const htmlCard = page.locator('[data-testid="draggable-element-rawHTML"]');
       if (!(await htmlCard.isVisible({ timeout: 500 }).catch(() => false))) await addBtn.click();
@@ -553,6 +598,39 @@ test.describe("Website Management", () => {
       await expect(page.getByText(/This is a web address, not JavaScript/)).toBeVisible({ timeout: 10000 });
     });
 
+  });
+
+  // ChurchAppsSupport#1341: the logo screen let you leave with unsaved changes, and Save resent every logo.
+  loggedInTest.describe("Appearance unsaved changes", () => {
+    loggedInTest("warns before leaving with unsaved changes and saves only what changed", async ({ page }) => {
+      await page.goto("/site/appearance#logo");
+      await expect(page.locator('[data-testid="save-appearance-button"]')).toBeVisible({ timeout: 15000 });
+
+      const blocksUnload = () => page.evaluate(() => {
+        const e = new Event("beforeunload", { cancelable: true });
+        window.dispatchEvent(e);
+        return e.defaultPrevented;
+      });
+      expect(await blocksUnload()).toBe(false);
+
+      await page.getByLabel(/short name/i).fill("E2E1341");
+      await expect.poll(blocksUnload).toBe(true);
+
+      // Don't write the demo church; capture the body and answer 200.
+      let posted: { keyName?: string }[] | null = null;
+      await page.route(/\/settings$/, async (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        posted = route.request().postDataJSON();
+        await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+      });
+      await page.locator('[data-testid="save-appearance-button"]').click();
+      await expect.poll(() => posted).not.toBeNull();
+
+      expect(Array.isArray(posted)).toBe(true);
+      const keys = (posted as unknown as { keyName?: string }[]).map((s) => s.keyName);
+      expect(keys).toContain("pwaShortName");
+      for (const k of ["logoLight", "logoDark", "ogImage", "favicon_400x400"]) expect(keys).not.toContain(k);
+    });
   });
 
   test.describe.serial("Blocks", () => {
@@ -602,6 +680,9 @@ test.describe("Website Management", () => {
       await addBtn.click();
       const name = page.locator('[name="name"]');
       await expect(name).toHaveCount(1);
+      // A block that isn't saved yet has nothing to delete.
+      await expect(page.locator('[data-testid="edit-block-inputbox"]').getByText("Add Block")).toBeVisible();
+      await expect(page.locator('[data-testid="edit-block-inputbox"]').getByRole("button", { name: "Delete" })).toHaveCount(0);
       const cancelBtn = page.locator("button").getByText("Cancel");
       await cancelBtn.click();
       await expect(name).toHaveCount(0);
@@ -685,6 +766,16 @@ test.describe("Website Management", () => {
       await expect(page).toHaveURL(/\/site\/blocks/, { timeout: 10000 });
     });
 
+    test("should delete block", async () => {
+      const row = page.locator("tr").filter({ hasText: "Zacchaeus Renamed Block" });
+      await row.locator('[data-testid^="rename-block-"]').click();
+      await page.locator('[data-testid="edit-block-inputbox"]').getByRole("button", { name: "Delete" }).click();
+      const blockDelete = page.waitForResponse(r => r.url().includes("/content/blocks/") && r.request().method() === "DELETE", { timeout: 15000 });
+      await confirmDelete(page);
+      expect((await blockDelete).status()).toBe(200);
+      await expect(page.locator("td").getByText("Zacchaeus Renamed Block")).toHaveCount(0, { timeout: 10000 });
+    });
+
   });
 
   test.describe.serial("Public website switch", () => {
@@ -746,8 +837,21 @@ test.describe("Website Management", () => {
 
   test.describe.serial("Appearance", () => {
     let page: Page;
+    // These tests save a new heading font, palette and custom CSS; put the church's styles back
+    // afterwards so later specs (e.g. "preview headings use the Appearance heading font") see the demo data.
+    const appearanceApi = process.env.API_BASE || "http://localhost:8084";
+    let appearanceAuth: { headers: Record<string, string> } | null = null;
+    let originalStyles: any = null;
 
     test.beforeAll(async ({ browser }) => {
+      const api = await request.newContext();
+      const loginBody = await (await api.post(`${appearanceApi}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+      const uc = (loginBody.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || loginBody.userChurches?.[0];
+      appearanceAuth = { headers: { Authorization: "Bearer " + uc?.jwt } };
+      const styles = await (await api.get(`${appearanceApi}/content/globalStyles`, appearanceAuth)).json();
+      originalStyles = styles?.id ? styles : null;
+      await api.dispose();
+
       const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
       page = await context.newPage();
       await login(page);
@@ -756,6 +860,11 @@ test.describe("Website Management", () => {
 
     test.afterAll(async () => {
       await page?.context().close();
+      if (originalStyles && appearanceAuth) {
+        const api = await request.newContext();
+        await api.post(`${appearanceApi}/content/globalStyles`, { ...appearanceAuth, data: [originalStyles] });
+        await api.dispose();
+      }
     });
 
     test.beforeEach(async () => {
@@ -778,6 +887,8 @@ test.describe("Website Management", () => {
     test("should cancel changing color palette", async () => {
       const colorSettings = page.getByText("Color Palette", { exact: true });
       await colorSettings.click();
+      // Suggested palettes only load colors; Save Palette is what applies them.
+      await expect(page.getByText("Click a palette to load its colors, then click Save Palette to apply it")).toBeVisible({ timeout: 10000 });
       const palettePreset = page.locator("span").getByText("Palette 16");
       await expect(palettePreset).toHaveCount(1);
       const cancelBtn = page.locator("button").getByText("Cancel");
@@ -790,7 +901,9 @@ test.describe("Website Management", () => {
       await fontSettings.click();
       const headerFontSelect = page.locator('[data-testid="heading-font-button"]');
       await headerFontSelect.click();
-      const headerFont = page.locator("td").getByText("Montserrat").first();
+      // The list is Google's live popularity order, 10 per page; search so the font is on page one.
+      await page.getByRole("dialog").getByLabel("Search").fill("Montserrat");
+      const headerFont = page.locator("td").getByText("Montserrat", { exact: true }).first();
       await expect(headerFont).toBeVisible({ timeout: 10000 });
       await headerFont.click();
       const saveBtn = page.locator('[data-testid="save-fonts-button"]');
@@ -1152,6 +1265,16 @@ test.describe("Website Management", () => {
     });
   });
 
+  loggedInTest.describe("Page editor — Appearance fonts", () => {
+    loggedInTest("preview headings use the Appearance heading font", async ({ page }) => {
+      await page.goto("/site/pages/PAG00000001");
+      const heading = page.locator('[data-testid="preview-desktop"]').locator("h1, h2, h3").first();
+      await expect(heading).toBeVisible({ timeout: 15000 });
+      // Demo globalStyles.fonts.heading is Poppins.
+      await expect(heading).toHaveCSS("font-family", /Poppins/);
+    });
+  });
+
   test.describe("Page editor — canvas chrome", () => {
     test("mobile preview renders inside a device frame", async ({ page }) => {
       await page.goto("/site/pages/PAG00000001");
@@ -1182,6 +1305,81 @@ test.describe("Website Management", () => {
       // First crumb walks up to the section editor.
       await breadcrumb.locator('[data-testid="breadcrumb-crumb-0"]').click();
       await expect(page.locator("#sectionDetailsBox")).toBeVisible({ timeout: 10000 });
+    });
+  });
+
+  test.describe("Navigation links", () => {
+    test("Add Link dialog has no Delete button", async ({ page }) => {
+      await page.locator('[data-testid="add-navigation-link"]').click();
+      const dialog = page.locator('div[role="dialog"]');
+      await expect(dialog.getByText("Add Link").first()).toBeVisible({ timeout: 10000 });
+      await expect(dialog.getByRole("button", { name: "Delete" })).toHaveCount(0);
+    });
+  });
+
+  test.describe("Page editor — templates and publishing", () => {
+    test("three-column template sections stack on phones", async ({ page, request }) => {
+      // Needs the public site (B1App, a Next.js app). On isolated stacks its default port belongs to B1Admin, so check it is really B1App.
+      const b1AppUrl = process.env.B1APP_URL || "http://grace.localtest.me:3301";
+      const probe = await request.get(b1AppUrl, { timeout: 10000 }).then((r) => r.text()).catch((): string => "");
+      test.skip(!probe.includes("/_next/"), "B1App is not running at " + b1AppUrl + " (set B1APP_URL)");
+      await openNewPageEditor(page, "Zebedee Stack Page");
+      await addTemplateSection(page, "serviceTimes");
+      await expect(page.getByText("Wednesday 6:30 PM").first()).toBeVisible({ timeout: 10000 });
+      // The public site (B1App) is what visitors see on their phones.
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto(b1AppUrl + "/zebedee-stack-page");
+      await expect(page.getByText("Wednesday 6:30 PM").first()).toBeVisible({ timeout: 60000 });
+      const column = page.locator(".rowColumn-0").first();
+      const rowWidth = await column.locator("xpath=..").evaluate((el) => el.getBoundingClientRect().width);
+      const colWidth = await column.evaluate((el) => el.getBoundingClientRect().width);
+      expect(colWidth).toBeGreaterThan(rowWidth * 0.8);
+    });
+
+    test("Discard is not offered right after Publish", async ({ page }) => {
+      await openNewPageEditor(page, "Zebedee Publish Page");
+      const publishPost = page.waitForResponse(r => /\/content\/pages\/[^/]+\/publish/.test(r.url()) && r.request().method() === "POST", { timeout: 15000 });
+      await page.locator('[data-testid="publish-button"]').click();
+      expect((await publishPost).status()).toBe(200);
+      await expect(page.locator('[data-testid="publish-status-pill"]')).toHaveAttribute("data-status", "published");
+      await page.locator('[data-testid="content-editor-overflow-button"]').click();
+      await expect(page.getByText("View history")).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('[data-testid="discard-changes-menu-item"]')).toHaveCount(0);
+    });
+  });
+
+  // Issue #1340: the editor didn't load the live site's section styles, so a photo hero with
+  // light text showed dark text over a tiled image, and the Pages count included the group
+  // pages hidden inside the collapsed Groups row.
+  test.describe("Pages list and editor match the live site", () => {
+    test("pages count matches the rows listed", async ({ page }) => {
+      const table = page.getByRole("region", { name: "Pages" }).locator("table");
+      await expect(table.getByText("/about", { exact: true })).toBeVisible({ timeout: 15000 });
+      const rows = await table.locator("tbody tr").count();
+      await expect(page.getByText(/^\d+ pages$/)).toHaveText(`${rows} pages`);
+    });
+
+    test("editor hero with a photo background matches the live site", async ({ page }) => {
+      const editBtn = page.locator('[data-testid="edit-content-button"]').first();
+      await expect(editBtn).toBeVisible({ timeout: 15000 });
+      await editBtn.click();
+
+      const hero = page.locator(".section.sectionBG.sectionDark").first();
+      await expect(hero).toBeVisible({ timeout: 15000 });
+      await expect(hero).toHaveCSS("background-size", "cover");
+      await expect(hero.getByText("Join us this Sunday", { exact: false })).toHaveCSS("color", "rgb(238, 238, 238)");
+    });
+  });
+
+  test.describe("Appearance preview in dark mode", () => {
+    test("the sample hero uses the site palette, not the admin theme", async ({ page }) => {
+      await page.addInitScript(() => localStorage.setItem("b1admin-theme-mode", "dark"));
+      await page.goto("/site/appearance");
+      const hero = page.locator('[data-testid="preview-hero"]');
+      await expect(hero).toBeVisible({ timeout: 15000 });
+      // The hero and the Plan Your Visit button both use the palette's accent color.
+      const buttonBg = await page.locator('[data-testid="preview-plan-visit-button"]').evaluate((el) => getComputedStyle(el).backgroundColor);
+      await expect(hero).toHaveCSS("background-color", buttonBg);
     });
   });
 
@@ -1278,7 +1476,7 @@ test.describe("Website Management", () => {
       await expect(page.locator("td").getByText("Zacchaeus Layout Page")).toBeVisible({ timeout: 10000 });
       await expect(page.locator('[name="title"]')).toHaveCount(0);
 
-      const editBtn = page.locator('[data-testid="edit-content-button"]').last();
+      const editBtn = page.locator("tr").filter({ hasText: "Zacchaeus Layout Page" }).first().locator('[data-testid="edit-content-button"]');
       await editBtn.click();
 
       const addContentBtn = page.locator('[data-testid="content-editor-add-button"]');
@@ -1394,49 +1592,212 @@ test.describe("Website Management", () => {
 
 });
 
-// #1265: the Calendar element can render the month grid or upcoming-event tiles.
-test.describe.serial("Calendar element display", () => {
-  let page: Page;
+// Both describes below edit ELE00000054, so they run in order on one worker.
+test.describe.serial("Events page calendar element", () => {
+  // #1265: the Calendar element can render the month grid or upcoming-event tiles.
+  test.describe.serial("Calendar element display", () => {
+    let page: Page;
 
-  test.beforeAll(async ({ browser }) => {
-    const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
-    page = await context.newPage();
-    await login(page);
+    test.beforeAll(async ({ browser }) => {
+      const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+      page = await context.newPage();
+      await login(page);
+    });
+
+    test.afterAll(async () => {
+      await page?.context().close();
+    });
+
+    const openCalendarElement = async () => {
+      const wrapper = page.locator('div[data-element-id="ELE00000054"]');
+      await expect(wrapper).toBeVisible({ timeout: 20000 });
+      await wrapper.click({ position: { x: 5, y: 5 } });
+      const select = page.locator('[data-testid="calendar-display-select"]');
+      await expect(select).toBeVisible({ timeout: 10000 });
+      return select;
+    };
+
+    const saveElement = async () => {
+      const elementPost = page.waitForResponse((r) => r.url().includes("/content/elements") && r.request().method() === "POST", { timeout: 15000 });
+      await page.locator("button").getByText("Save").click();
+      const resp = await elementPost;
+      expect(resp.status()).toBe(200);
+      return resp.request().postDataJSON()[0].answersJSON as string;
+    };
+
+    test("offers Month calendar or Upcoming events on the Events page calendar element", async () => {
+      await page.goto("/site/pages/PAG00000004");
+      const select = await openCalendarElement();
+      await expect(select).toContainText("Month calendar");
+      await select.click();
+      await page.getByRole("option", { name: "Upcoming events" }).click();
+      expect(JSON.parse(await saveElement()).display).toBe("upcoming");
+
+      const again = await openCalendarElement();
+      await expect(again).toContainText("Upcoming events");
+      await again.click();
+      await page.getByRole("option", { name: "Month calendar" }).click();
+      expect(JSON.parse(await saveElement()).display).toBe("month");
+    });
+
+    test("restricts the calendar element to one tag and clears it again", async () => {
+      await page.goto("/site/pages/PAG00000004");
+      await openCalendarElement();
+      const tagInput = page.locator('[data-testid="calendar-tag-input"] input');
+      await expect(tagInput).toHaveValue("");
+      await tagInput.fill("youth");
+      expect(JSON.parse(await saveElement()).tag).toBe("youth");
+
+      await openCalendarElement();
+      await expect(tagInput).toHaveValue("youth");
+      await tagInput.fill("");
+      expect(JSON.parse(await saveElement()).tag ?? "").toBe("");
+    });
   });
 
-  test.afterAll(async () => {
-    await page?.context().close();
+  // ChurchAppsSupport#1399: Upcoming events can be shown as one row that scrolls by itself, like the Verse of the Day week.
+  test.describe.serial("Upcoming events scrolling layout", () => {
+    const API_BASE = process.env.API_BASE || "http://localhost:8084";
+    let page: Page;
+    let auth: { headers: Record<string, string> };
+    let originalElement: any;
+
+    test.beforeAll(async ({ browser }) => {
+      const ctx = await request.newContext();
+      const body = await (await ctx.post(`${API_BASE}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+      const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+      auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+      originalElement = await (await ctx.get(`${API_BASE}/content/elements/ELE00000054`, auth)).json();
+      await ctx.dispose();
+      const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+      page = await context.newPage();
+      await login(page);
+    });
+
+    test.afterAll(async () => {
+      if (originalElement?.id) {
+        const ctx = await request.newContext();
+        await ctx.post(`${API_BASE}/content/elements`, { ...auth, data: [originalElement] }).catch(() => { });
+        await ctx.dispose();
+      }
+      await page?.context().close();
+    });
+
+    const openCalendarElement = async () => {
+      const wrapper = page.locator('div[data-element-id="ELE00000054"]');
+      await expect(wrapper).toBeVisible({ timeout: 20000 });
+      await wrapper.click({ position: { x: 5, y: 5 } });
+      const select = page.locator('[data-testid="calendar-display-select"]');
+      await expect(select).toBeVisible({ timeout: 10000 });
+      return select;
+    };
+
+    test("offers a scrolling layout for Upcoming events and saves it", async () => {
+      await page.goto("/site/pages/PAG00000004");
+      const display = await openCalendarElement();
+      await display.click();
+      await page.getByRole("option", { name: "Upcoming events" }).click();
+      const layout = page.locator('[data-testid="calendar-layout-select"]');
+      await expect(layout).toContainText("Grid");
+      await layout.click();
+      await page.getByRole("option", { name: "Scrolling (automatic)" }).click();
+      const elementPost = page.waitForResponse((r) => r.url().includes("/content/elements") && r.request().method() === "POST", { timeout: 15000 });
+      await page.locator("button").getByText("Save").click();
+      const answers = JSON.parse((await elementPost).request().postDataJSON()[0].answersJSON);
+      expect(answers).toMatchObject({ display: "upcoming", layout: "autoscroll" });
+    });
   });
 
-  const openCalendarElement = async () => {
-    const wrapper = page.locator('div[data-element-id="ELE00000054"]');
-    await expect(wrapper).toBeVisible({ timeout: 20000 });
-    await wrapper.click({ position: { x: 5, y: 5 } });
-    const select = page.locator('[data-testid="calendar-display-select"]');
-    await expect(select).toBeVisible({ timeout: 10000 });
-    return select;
-  };
+  // ChurchAppsSupport#1442: the Group List element gets the same Grid / Scrolling (automatic) layout choice.
+  test.describe.serial("Group list scrolling layout", () => {
+    const API_BASE = process.env.API_BASE || "http://localhost:8084";
+    let page: Page;
+    let auth: { headers: Record<string, string> };
+    let elementId: string | undefined;
 
-  const saveElement = async () => {
-    const elementPost = page.waitForResponse((r) => r.url().includes("/content/elements") && r.request().method() === "POST", { timeout: 15000 });
-    await page.locator("button").getByText("Save").click();
-    const resp = await elementPost;
-    expect(resp.status()).toBe(200);
-    return resp.request().postDataJSON()[0].answersJSON as string;
-  };
+    test.beforeAll(async ({ browser }) => {
+      const ctx = await request.newContext();
+      const body = await (await ctx.post(`${API_BASE}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+      const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+      auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+      const res = await ctx.post(`${API_BASE}/content/elements`, { ...auth, data: [{ churchId: "CHU00000001", sectionId: "SEC00000019", elementType: "groupList", sort: 3, answersJSON: JSON.stringify({ label: "worship" }) }] });
+      elementId = (await res.json())[0]?.id;
+      await ctx.dispose();
+      const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+      page = await context.newPage();
+      await login(page);
+    });
 
-  test("offers Month calendar or Upcoming events on the Events page calendar element", async () => {
-    await page.goto("/site/pages/PAG00000004");
-    const select = await openCalendarElement();
-    await expect(select).toContainText("Month calendar");
-    await select.click();
-    await page.getByRole("option", { name: "Upcoming events" }).click();
-    expect(JSON.parse(await saveElement()).display).toBe("upcoming");
+    test.afterAll(async () => {
+      if (elementId) {
+        const ctx = await request.newContext();
+        await ctx.delete(`${API_BASE}/content/elements/${elementId}`, auth).catch(() => { });
+        await ctx.dispose();
+      }
+      await page?.context().close();
+    });
 
-    const again = await openCalendarElement();
-    await expect(again).toContainText("Upcoming events");
-    await again.click();
-    await page.getByRole("option", { name: "Month calendar" }).click();
-    expect(JSON.parse(await saveElement()).display).toBe("month");
+    test("offers a scrolling layout for a Group List and saves it", async () => {
+      expect(elementId).toBeTruthy();
+      await page.goto("/site/pages/PAG00000004");
+      const wrapper = page.locator(`div[data-element-id="${elementId}"]`);
+      await expect(wrapper).toBeVisible({ timeout: 20000 });
+      await wrapper.click({ position: { x: 5, y: 5 } });
+      const layout = page.locator('[data-testid="group-list-layout-select"]');
+      await expect(layout).toBeVisible({ timeout: 10000 });
+      await expect(layout).toContainText("Grid");
+      await layout.click();
+      await page.getByRole("option", { name: "Scrolling (automatic)" }).click();
+      const elementPost = page.waitForResponse((r) => r.url().includes("/content/elements") && r.request().method() === "POST", { timeout: 15000 });
+      await page.locator("button").getByText("Save").click();
+      const answers = JSON.parse((await elementPost).request().postDataJSON()[0].answersJSON);
+      expect(answers).toMatchObject({ label: "worship", layout: "autoscroll" });
+    });
+  });
+
+  test.describe.serial("Groups browser scrolling layout", () => {
+    const API_BASE = process.env.API_BASE || "http://localhost:8084";
+    let page: Page;
+    let auth: { headers: Record<string, string> };
+    let elementId: string | undefined;
+
+    test.beforeAll(async ({ browser }) => {
+      const ctx = await request.newContext();
+      const body = await (await ctx.post(`${API_BASE}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+      const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+      auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+      const res = await ctx.post(`${API_BASE}/content/elements`, { ...auth, data: [{ churchId: "CHU00000001", sectionId: "SEC00000019", elementType: "groups", sort: 4, answersJSON: JSON.stringify({ title: "Find a Group" }) }] });
+      elementId = (await res.json())[0]?.id;
+      await ctx.dispose();
+      const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+      page = await context.newPage();
+      await login(page);
+    });
+
+    test.afterAll(async () => {
+      if (elementId) {
+        const ctx = await request.newContext();
+        await ctx.delete(`${API_BASE}/content/elements/${elementId}`, auth).catch(() => { });
+        await ctx.dispose();
+      }
+      await page?.context().close();
+    });
+
+    test("offers a scrolling layout for a Groups Browser and saves it", async () => {
+      expect(elementId).toBeTruthy();
+      await page.goto("/site/pages/PAG00000004");
+      const wrapper = page.locator(`div[data-element-id="${elementId}"]`);
+      await expect(wrapper).toBeVisible({ timeout: 20000 });
+      await wrapper.click({ position: { x: 5, y: 5 } });
+      const layout = page.locator('[data-testid="groups-layout-select"]');
+      await expect(layout).toBeVisible({ timeout: 10000 });
+      await expect(layout).toContainText("Grid");
+      await layout.click();
+      await page.getByRole("option", { name: "Scrolling (automatic)" }).click();
+      const elementPost = page.waitForResponse((r) => r.url().includes("/content/elements") && r.request().method() === "POST", { timeout: 15000 });
+      await page.locator("button").getByText("Save").click();
+      const answers = JSON.parse((await elementPost).request().postDataJSON()[0].answersJSON);
+      expect(answers).toMatchObject({ title: "Find a Group", layout: "autoscroll" });
+    });
   });
 });

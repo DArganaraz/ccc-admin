@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { type ChurchInterface } from "@churchapps/helpers";
 import { UserHelper, Permissions, Locale, ApiHelper, Loading, DateHelper } from "@churchapps/apphelper";
 import { useLocation, Link as RouterLink } from "react-router-dom";
@@ -32,7 +32,9 @@ const SECTION_KEYS = [
 
 export const ManageChurch = () => {
   const location = useLocation();
-  const hash = location.hash?.replace("#", "");
+  const rawHash = location.hash?.replace("#", "");
+  // #webhooks (from the old /settings/webhooks route) opens the Developer section on its Webhooks tab.
+  const hash = rawHash === "webhooks" ? "developer" : rawHash;
 
   const jwt = ApiHelper.getConfig("MembershipApi").jwt;
   const churchId = UserHelper.currentUserChurch.church.id || "";
@@ -111,11 +113,21 @@ export const ManageChurch = () => {
       : Locale.label("settings.landing.campusesCount").replace("{count}", String(campusCount));
   const customFieldsSubtitle = personFieldCount === 0
     ? Locale.label("settings.landing.customFieldsSubtitle")
-    : Locale.label("settings.landing.customFieldsCount").replace("{count}", String(personFieldCount));
+    : personFieldCount === 1
+      ? Locale.label("settings.landing.customFieldsOne")
+      : Locale.label("settings.landing.customFieldsCount").replace("{count}", String(personFieldCount));
   const givingSubtitle = gateway
     ? Locale.label("settings.landing.givingProvider").replace("{provider}", gateway.provider || "").replace("{currency}", (gateway.currency || "").toUpperCase())
     : Locale.label("settings.landing.notConfigured");
-  const textingSubtitle = textingProvider || Locale.label("settings.landing.notConfigured");
+  const textingNames: Record<string, string> = {
+    clearstream: Locale.label("settings.textingSettingsEdit.clearstream"),
+    textinchurch: Locale.label("settings.textingSettingsEdit.textInChurch"),
+    nalo: Locale.label("settings.textingSettingsEdit.nalo"),
+    twilio: Locale.label("settings.textingSettingsEdit.twilio"),
+    ministrystuff: Locale.label("settings.textingSettingsEdit.ministryStuff")
+  };
+  const textingName = textingProvider ? (textingNames[String(textingProvider).toLowerCase()] || textingProvider) : "";
+  const textingSubtitle = textingName || Locale.label("settings.landing.notConfigured");
   const storageProviderName = (storage.data || []).find((p) => p.enabled)?.provider;
   const storageNames: Record<string, string> = { ministrystuff: "MinistryStuff", googledrive: "Google Drive", dropbox: "Dropbox", onedrive: "OneDrive", s3: "S3" };
   const storageSubtitle = storageNames[storageProviderName] || Locale.label("settings.storageSettingsEdit.churchAppsFree");
@@ -205,7 +217,7 @@ export const ManageChurch = () => {
             headerText={Locale.label("settings.churchSettingsEdit.textingTitle")}
             headerIcon="sms"
             data-testid="settings-texting"
-            view={<SettingsRow label={Locale.label("settings.textingSettingsEdit.provider")} value={textingProvider || Locale.label("settings.landing.notConfigured")} />}
+            view={<SettingsRow label={Locale.label("settings.textingSettingsEdit.provider")} value={textingSubtitle} />}
             renderEdit={(saveTrigger, onSaveComplete) => <TextingSettingsEdit churchId={churchId} saveTrigger={saveTrigger} onSaveComplete={onSaveComplete} />}
             onSaved={handleSaved}
           />
@@ -230,6 +242,8 @@ export const ManageChurch = () => {
             view={domainsView}
             renderEdit={(saveTrigger, onSaveComplete) => <DomainSettingsEdit churchId={churchId} saveTrigger={saveTrigger} onSaveComplete={onSaveComplete} />}
             onSaved={handleSaved}
+            // Every domain write waits on the proxy sync, so a multi-domain save can run well past 15s.
+            saveTimeoutMs={60000}
           />
         );
       case "grade-promotion":
@@ -284,7 +298,7 @@ export const ManageChurch = () => {
       case "custom-fields":
         return <CustomFieldsSection />;
       case "developer":
-        return <DeveloperSection />;
+        return <DeveloperSection initialTab={rawHash === "webhooks" ? "webhooks" : undefined} />;
       default:
         return null;
     }

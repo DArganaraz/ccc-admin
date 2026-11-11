@@ -55,6 +55,7 @@ test.describe("Form-linked group auto-add", () => {
   test("shows None in the group select before a group is chosen", async ({ page }) => {
     await navigateToForms(page);
     await page.locator('[data-testid="add-form-button"]').click();
+    await selectMuiOption(page, page.locator('[data-testid="content-type-select"]'), "Stand Alone");
     await page.locator('[data-testid="auto-create-person-checkbox"] input').check();
     const groupSelect = page.locator('[data-testid="form-group-select"]');
     await expect(groupSelect).toBeVisible({ timeout: 10000 });
@@ -150,5 +151,21 @@ test.describe("Form-linked group auto-add", () => {
     await confirmDelete(page);
     await page.locator("#formBox").waitFor({ state: "hidden", timeout: 15000 });
     formId = "";
+  });
+});
+
+// #1309: any stand-alone form can be linked to a group, without creating person records,
+// so the group's members see it on their group page and its leaders can read the answers.
+test.describe("Form linked to a group", () => {
+  test("a stand alone form offers the linked group picker without auto-create", async ({ page }) => {
+    await navigateToForms(page);
+    await page.locator('[data-testid="add-form-button"]').click();
+    await selectMuiOption(page, page.locator('[data-testid="content-type-select"]'), "Stand Alone");
+    await expect(page.locator('[data-testid="auto-create-person-checkbox"] input')).not.toBeChecked();
+    const groupSelect = page.locator('[data-testid="form-group-select"]');
+    await expect(groupSelect).toBeVisible({ timeout: 10000 });
+    await expect(page.locator("#formBox")).toContainText("Linked group");
+    await expect(page.getByTestId("form-group-helper")).toHaveText("Members of this group see this form on their group page, and its leaders can view and print the answers.");
+    await page.locator("#formBox button", { hasText: /^Cancel$/ }).click();
   });
 });

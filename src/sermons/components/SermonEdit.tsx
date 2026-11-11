@@ -155,13 +155,15 @@ export const SermonEdit: React.FC<Props> = (props) => {
 
   const fetchVideo = (videoType: "youtube" | "vimeo") => {
     const videoData = watch("videoData");
-    ApiHelper.getAnonymous(`/sermons/lookup?videoType=${videoType}&videoData=${videoData}`, "ContentApi").then((d: any) => {
+    setErrors([]);
+    ApiHelper.getAnonymous(`/sermons/lookup?videoType=${videoType}&videoData=${encodeURIComponent(videoData || "")}`, "ContentApi").then((d: any) => {
+      if (!d || d.error || !d.title) { setErrors([Locale.label("sermons.sermonEdit.fetchError")]); return; }
       setValue("title", d.title);
       setValue("description", d.description);
       setValue("publishDate", d.publishDate ? DateHelper.formatHtml5Date(DateHelper.toDate(d.publishDate)) : "");
       setThumbnail(d.thumbnail);
       setDuration(d.duration);
-    });
+    }).catch(() => setErrors([Locale.label("sermons.sermonEdit.fetchError")]));
   };
 
   const handleVideoDataChange = (e: React.ChangeEvent<HTMLInputElement>, videoType: string) => {
@@ -303,7 +305,7 @@ export const SermonEdit: React.FC<Props> = (props) => {
 
             <Box sx={{ mt: 2 }}>
               <TextField fullWidth label={Locale.label("sermons.sermonEdit.audioUrl")} helperText={Locale.label("sermons.sermonEdit.audioUrlHelp")} data-testid="sermon-audio-url-input" {...register("audioUrl")} />
-              {!UniqueIdHelper.isMissing(props.currentSermon?.id) && (
+              {props.currentSermon?.id && !UniqueIdHelper.isMissing(props.currentSermon.id) && (
                 <Box sx={{ mt: 1 }}>
                   <CustomFileUpload contentType="sermon" contentId={props.currentSermon.id} accept={AUDIO_ACCEPT} pendingSave={pendingAudioUpload} saveCallback={handleAudioUploaded} errorCallback={() => setPendingAudioUpload(false)} />
                   <Button variant="outlined" size="small" sx={{ mt: 1 }} onClick={() => setPendingAudioUpload(true)} data-testid="upload-sermon-audio-button">{Locale.label("sermons.sermonEdit.uploadAudio")}</Button>

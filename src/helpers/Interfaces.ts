@@ -1,4 +1,7 @@
-import type { SessionInterface as BaseSessionInterface, ServiceTimeInterface } from "@churchapps/helpers";
+import type { SessionInterface as BaseSessionInterface, ServiceTimeInterface, QuestionInterface } from "@churchapps/helpers";
+
+export type { FormSubmissionInterface, QuestionInterface } from "@churchapps/helpers";
+export type QuestionChoiceInterface = NonNullable<QuestionInterface["choices"]>[number];
 
 export interface SessionInterface extends BaseSessionInterface {
   serviceTime?: ServiceTimeInterface;
@@ -110,6 +113,7 @@ export interface SongDetailInterface {
   arrangementKeyId?: string;
   shortDescription?: string;
   arrangementKeySignature?: string;
+  arrangementName?: string;
 }
 
 export interface SongDetailLinkInterface {
@@ -175,6 +179,7 @@ export interface PlanTypeInterface {
   churchId?: string;
   ministryId?: string;
   name?: string;
+  lessonTrim?: string | null;
 }
 
 export interface PlanTemplateInterface {
@@ -213,7 +218,9 @@ export interface PlanInterface {
   showVolunteerNames?: boolean;
   prepared?: boolean;
   autoReplaceOnDecline?: boolean;
+  confirmationWorkflowId?: string | null;
   lastAutofillRunId?: string;
+  lessonTrimWarning?: string | null;
 }
 
 export interface SchedulingPreferenceInterface {

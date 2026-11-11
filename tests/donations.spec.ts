@@ -1,11 +1,12 @@
 import fs from "fs";
-import { type Page, type APIRequestContext, type Locator, request, test as plainTest } from "@playwright/test";
+import { type Browser, type Page, type APIRequestContext, type Locator, request, test as plainTest } from "@playwright/test";
 import { donationsTest as test, expect } from "./helpers/test-fixtures";
 import { fillFundForm } from "./helpers/donations";
 import { login } from "./helpers/auth";
 import { navigateToDonations, siblingNav } from "./helpers/navigation";
 import { STORAGE_STATE_PATH } from "./global-setup";
 import { confirmDelete } from "./helpers/fixtures";
+import { mockChurchLogo } from "./helpers/print-logo";
 
 // Test names: ZACCHAEUS/ZEBEDEE used throughout; covers Funds + Batches + Donation entry from donation-report.md/manual-input.md (steps 3-27).
 
@@ -61,7 +62,9 @@ test.describe.serial("Donations Management", () => {
       await fillFundForm(page, { name: TEST_FUND_INITIAL, toggleTaxDeductible: true });
 
       await expect(page.locator("a").getByText(TEST_FUND_INITIAL, { exact: true })).toHaveCount(1, { timeout: 10000 });
-      await expect(page.locator("p").getByText("Non-Deductible")).toHaveCount(1, { timeout: 10000 });
+      // Scope to this fund's row: other specs may have their own non-deductible fund in the list at the same time.
+      const row = page.locator("tr").filter({ has: page.locator("a").getByText(TEST_FUND_INITIAL, { exact: true }) });
+      await expect(row.getByText("Non-Deductible").first()).toBeVisible({ timeout: 10000 });
     });
 
     test("should edit fund", async () => {
@@ -74,7 +77,8 @@ test.describe.serial("Donations Management", () => {
 
       await expect(page.locator("a").getByText(TEST_FUND_RENAMED, { exact: true })).toHaveCount(1, { timeout: 10000 });
       await expect(page.locator("a").getByText(TEST_FUND_INITIAL, { exact: true })).toHaveCount(0, { timeout: 10000 });
-      await expect(page.locator("p").getByText("Non-Deductible")).toHaveCount(0, { timeout: 10000 });
+      const row = page.locator("tr").filter({ has: page.locator("a").getByText(TEST_FUND_RENAMED, { exact: true }) });
+      await expect(row.getByText("Tax Deductible").first()).toBeVisible({ timeout: 10000 });
     });
 
     test("should cancel editing fund", async () => {
@@ -277,6 +281,10 @@ test.describe.serial("Donations Management", () => {
       const deleteBtn = page.locator('[id="delete"]');
       await expect(deleteBtn).toBeVisible({ timeout: 10000 });
       await deleteBtn.click();
+      // Funds are soft-deleted; the gifts recorded to them stay, so the warning must not say otherwise.
+      const dialog = page.locator('div[role="dialog"]').last();
+      await expect(dialog).toContainText("Donations already recorded to it are kept");
+      await expect(dialog).not.toContainText("all donations within it");
       await confirmDelete(page);
       await expect(page.locator("a").getByText(TEST_FUND_RENAMED, { exact: true })).toHaveCount(0, { timeout: 10000 });
     });
@@ -363,8 +371,19 @@ test.describe("Donations — navigation and listing extras", () => {
     await expect(urlField).toBeVisible({ timeout: 10000 });
     await expect(urlField).toHaveValue(/\/donate\?fundId=FUN00000001/);
 
+    // The QR code follows the link, including the amount (ChurchAppsSupport#1426).
+    const qr = page.getByTestId("giving-link-qr");
+    await expect(qr).toBeVisible({ timeout: 10000 });
+    const qrBefore = await qr.evaluate((c: HTMLCanvasElement) => c.toDataURL());
+
     await page.getByTestId("giving-link-amount").fill("50");
     await expect(urlField).toHaveValue(/\/donate\?fundId=FUN00000001&amount=50/);
+    await expect(qr).toBeVisible();
+    await expect.poll(() => qr.evaluate((c: HTMLCanvasElement) => c.toDataURL())).not.toBe(qrBefore);
+
+    const download = page.waitForEvent("download");
+    await page.getByTestId("giving-link-download").click();
+    expect((await download).suggestedFilename()).toBe("giving-qr-general-fund.png");
 
     await page.getByTestId("copy-giving-link").click();
     await page.getByTestId("close-giving-link").click();
@@ -515,6 +534,8 @@ test.describe("QuickBooks export", () => {
 const API_BASE = process.env.API_BASE || "http://localhost:8084";
 const NOTES_BATCH_NAME = "Habakkuk Notes Batch";
 const NOTES_TEXT = "Envelope #42 — pledge campaign gift";
+// Longer than the old 200px clipped cell, so a nowrap/ellipsis regression shows as scrollWidth > clientWidth.
+const LONG_NOTE = "Envelope #42 for the building fund pledge campaign, given in memory of Donald Clark by the whole family at the fall dinner";
 
 async function apiAuth(ctx: APIRequestContext) {
   const res = await ctx.post(`${API_BASE}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
@@ -525,23 +546,28 @@ async function apiAuth(ctx: APIRequestContext) {
 
 test.describe("Donations list — notes column", () => {
   test.describe.configure({ retries: 0 });
-  let batchId: string;
+  const batchIds: string[] = [];
 
-  test.afterAll(async () => {
-    if (!batchId) return;
+  async function createNotesBatch() {
     const ctx = await request.newContext();
     const auth = await apiAuth(ctx);
-    await ctx.delete(`${API_BASE}/giving/donationbatches/${batchId}`, auth);
+    const batchRes = await ctx.post(`${API_BASE}/giving/donationbatches`, { ...auth, data: [{ name: NOTES_BATCH_NAME, batchDate: "2025-11-01" }] });
+    const batchId: string = (await batchRes.json())[0].id;
+    batchIds.push(batchId);
+    await ctx.dispose();
+    return batchId;
+  }
+
+  test.afterAll(async () => {
+    if (batchIds.length === 0) return;
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    for (const batchId of batchIds) await ctx.delete(`${API_BASE}/giving/donationbatches/${batchId}`, auth);
     await ctx.dispose();
   });
 
   test("a donation's notes show in the batch donations list", async ({ page }) => {
-    const ctx = await request.newContext();
-    const auth = await apiAuth(ctx);
-    const batchRes = await ctx.post(`${API_BASE}/giving/donationbatches`, { ...auth, data: [{ name: NOTES_BATCH_NAME, batchDate: "2025-11-01" }] });
-    const batches = await batchRes.json();
-    batchId = batches[0].id;
-    await ctx.dispose();
+    const batchId = await createNotesBatch();
 
     await page.goto(`/donations/batches/${batchId}`);
     await expect(page).toHaveURL(new RegExp(`/donations/batches/${batchId}`));
@@ -555,6 +581,134 @@ test.describe("Donations list — notes column", () => {
     await page.locator('[data-testid="add-donation-submit"]').click();
 
     await expect(page.locator("table td").getByText(NOTES_TEXT)).toHaveCount(1, { timeout: 10000 });
+  });
+
+  // ChurchAppsSupport#1511: a long note shows in full instead of being cut off with an ellipsis.
+  test("a long note shows in full in the batch donations list, not clipped", async ({ page }) => {
+    const batchId = await createNotesBatch();
+    await page.goto(`/donations/batches/${batchId}`);
+    const anon = page.locator("button").getByText("Anonymous");
+    await expect(anon).toBeVisible({ timeout: 10000 });
+    await anon.click();
+
+    await page.locator('[data-testid="bulk-donation-notes"] input').fill(LONG_NOTE);
+    await page.locator('[data-testid="bulk-donation-amount"] input').fill("15.00");
+    await page.locator('[data-testid="add-donation-submit"]').click();
+
+    const note = page.locator("table td").getByText(LONG_NOTE);
+    await expect(note).toBeVisible({ timeout: 10000 });
+    await expect(note).toHaveText(LONG_NOTE);
+    const clipped = await note.evaluate((el) => el.scrollWidth > el.clientWidth);
+    expect(clipped).toBe(false);
+  });
+});
+
+// ChurchAppsSupport#1511: the person's giving history (/people/:id → All years) shows a long note in full too.
+test.describe("Person giving history — notes column", () => {
+  test.describe.configure({ retries: 0 });
+  const DONOR_ID = "PER00000080"; // Donald Clark
+  let batchId: string;
+  let donationId: string;
+
+  test.beforeAll(async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    // Make sure the church has not hidden giving on person records.
+    const settings = await (await ctx.get(`${API_BASE}/membership/settings`, auth)).json();
+    const hideSetting = (settings || []).find((s: any) => s.keyName === "hideGivingOnPerson");
+    if (hideSetting?.id) await ctx.delete(`${API_BASE}/membership/settings/${hideSetting.id}`, auth);
+
+    const batchRes = await ctx.post(`${API_BASE}/giving/donationbatches`, { ...auth, data: [{ name: NOTES_BATCH_NAME, batchDate: new Date().toISOString().split("T")[0] }] });
+    batchId = (await batchRes.json())[0].id;
+    // Current-year date so pickDefaultYear lands on the year holding this gift.
+    const donationRes = await ctx.post(`${API_BASE}/giving/donations`, {
+      ...auth,
+      data: [{ batchId, personId: DONOR_ID, donationDate: new Date().toISOString(), amount: 15, currency: "usd", method: "Check", notes: LONG_NOTE }]
+    });
+    expect(donationRes.status()).toBe(200);
+    donationId = (await donationRes.json())[0].id;
+    await ctx.dispose();
+  });
+
+  test.afterAll(async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    if (donationId) await ctx.delete(`${API_BASE}/giving/donations/${donationId}`, auth);
+    if (batchId) await ctx.delete(`${API_BASE}/giving/donationbatches/${batchId}`, auth);
+    await ctx.dispose();
+  });
+
+  test("a long note shows in full on the person's giving history, not clipped", async ({ page }) => {
+    await page.goto(`/people/${DONOR_ID}`);
+    const allGiving = page.getByTestId("person-giving-all");
+    await expect(allGiving).toBeVisible({ timeout: 15000 });
+    await allGiving.click();
+
+    const note = page.locator("table td").getByText(LONG_NOTE);
+    await expect(note).toBeVisible({ timeout: 10000 });
+    await expect(note).toHaveText(LONG_NOTE);
+    const clipped = await note.evaluate((el) => el.scrollWidth > el.clientWidth);
+    expect(clipped).toBe(false);
+  });
+});
+
+// ChurchAppsSupport#1425: a counting team can tell who typed in each gift without a signature sheet.
+const ENTERED_BY_BATCH_NAME = "Zacchaeus Entered By Batch";
+
+test.describe("Donations list — entered by", () => {
+  test.describe.configure({ retries: 0 });
+  let batchId: string;
+
+  test.beforeAll(async () => {
+    const ctx = await request.newContext();
+    const batchRes = await ctx.post(`${API_BASE}/giving/donationbatches`, { ...(await apiAuth(ctx)), data: [{ name: ENTERED_BY_BATCH_NAME, batchDate: "2025-11-09" }] });
+    batchId = (await batchRes.json())[0].id;
+    await ctx.dispose();
+  });
+
+  test.afterAll(async () => {
+    if (!batchId) return;
+    const ctx = await request.newContext();
+    await ctx.delete(`${API_BASE}/giving/donationbatches/${batchId}`, await apiAuth(ctx));
+    await ctx.dispose();
+  });
+
+  test("a hand-entered gift shows who entered it, on the batch page and its printout", async ({ page }) => {
+    await page.goto(`/donations/batches/${batchId}`);
+    const anon = page.locator("button").getByText("Anonymous");
+    await expect(anon).toBeVisible({ timeout: 10000 });
+    await anon.click();
+    await page.locator('[data-testid="bulk-donation-amount"] input').fill("15.00");
+    await page.locator('[data-testid="add-donation-submit"]').click();
+
+    await expect(page.getByTestId("donation-entered-by")).toHaveText("Entered by Demo User", { timeout: 10000 });
+
+    await page.addInitScript(() => { window.print = () => {}; });
+    await page.goto("/donations/batches/print-all?start=2025-11-09&end=2025-11-09");
+    const doc = page.getByTestId("batch-print-document").filter({ hasText: ENTERED_BY_BATCH_NAME });
+    await expect(doc.getByText("Entered by Demo User", { exact: true })).toBeVisible({ timeout: 15000 });
+  });
+
+  test("the stamp comes from the server and survives an edit", async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    const created = await ctx.post(`${API_BASE}/giving/donations`, { ...auth, data: [{ batchId, donationDate: "2025-11-09", amount: 10, method: "Check", enteredBy: "PER00000001" }] });
+    const gift = (await created.json())[0];
+    const stamped = await (await ctx.get(`${API_BASE}/giving/donations/${gift.id}`, auth)).json();
+    expect(stamped.enteredBy).toBeTruthy();
+    expect(stamped.enteredBy).not.toBe("PER00000001");
+
+    await ctx.post(`${API_BASE}/giving/donations`, { ...auth, data: [{ ...stamped, amount: 20, enteredBy: "PER00000001" }] });
+    const edited = await (await ctx.get(`${API_BASE}/giving/donations/${gift.id}`, auth)).json();
+    expect(Number(edited.amount)).toBe(20);
+    expect(edited.enteredBy).toBe(stamped.enteredBy);
+    await ctx.dispose();
+  });
+
+  test("gifts with no recorded enterer show no caption", async ({ page }) => {
+    await page.goto("/donations/batches/BAT00000001");
+    await expect(page.locator('[data-testid^="donation-row-"]').first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("donation-entered-by")).toHaveCount(0);
   });
 });
 
@@ -733,8 +887,8 @@ test.describe("Mixed-currency giving totals", () => {
   // Serial so beforeAll seeds the euro gift once; parallel workers each ran it and doubled the totals.
   test.describe.configure({ mode: "serial", retries: 0 });
   let batchId: string;
-  let expectedTotal: string; // header stats round to whole units: "$ 215"
-  let expectedExact: string; // list rows keep cents: "$ 214.60"
+  let expectedTotal: string; // header stats round to whole units: "$215"
+  let expectedExact: string; // list rows keep cents: "$214.60"
 
   // February 2024 holds no seed gifts, so date filters isolate these two: €100 from Donald Clark + $100 anonymous.
   test.beforeAll(async () => {
@@ -758,8 +912,8 @@ test.describe("Mixed-currency giving totals", () => {
     expect(table.rates?.EUR, "Api could not load EUR rates from frankfurter").toBeGreaterThan(0);
     const total = 100 + Number((100 / table.rates.EUR).toFixed(2));
     expect(Math.round(total)).not.toBe(200);
-    expectedTotal = "$ " + Math.round(total).toLocaleString("en-US");
-    expectedExact = "$ " + total.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    expectedTotal = "$" + Math.round(total).toLocaleString("en-US");
+    expectedExact = "$" + total.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     await ctx.dispose();
   });
 
@@ -776,7 +930,7 @@ test.describe("Mixed-currency giving totals", () => {
     await expect(page.getByTestId("batch-total-amount")).toHaveText(expectedTotal, { timeout: 15000 });
     await expect(page.getByText(CONVERTED_NOTE).first()).toBeVisible();
     // The gift itself stays in euros.
-    await expect(page.locator('[data-testid^="donation-row-"]').filter({ hasText: "Donald Clark" })).toContainText("€ 100.00");
+    await expect(page.locator('[data-testid^="donation-row-"]').filter({ hasText: "Donald Clark" })).toContainText("€100.00");
   });
 
   test("batches list shows the converted batch total", async ({ page }) => {
@@ -876,6 +1030,50 @@ test.describe("Donation batch print", () => {
     await expect(documents.first()).toContainText(/Batch Total\s*\$\s*1,900\.00/);
     await expect(page.getByText("April 6, 2025 Batch")).toHaveCount(0);
   });
+
+  // Issue #1385: with All selected, Print covers every batch on screen, not just the last 30 days.
+  test("batches Print with All selected includes the older batches", async ({ page }) => {
+    await page.addInitScript(() => { window.print = () => {}; });
+    await page.goto("/donations/batches");
+    await page.getByTestId("print-batches-button").click();
+    await expect(page).toHaveURL(/\/donations\/batches\/print-all/);
+    const params = new URL(page.url()).searchParams;
+    const start = params.get("start") || "";
+    const end = params.get("end") || "";
+    expect(start).not.toBe("");
+    expect(end).not.toBe("");
+    expect(start <= "2025-03-02").toBe(true);
+    expect(end >= "2025-03-02").toBe(true);
+    await expect(page.getByTestId("batch-print-document").filter({ hasText: "March 2, 2025 Batch" })).toHaveCount(1, { timeout: 15000 });
+  });
+
+  // Issue #1385: a selected year prints that calendar year only.
+  test("batches Print with a year selected prints that calendar year", async ({ page }) => {
+    await page.addInitScript(() => { window.print = () => {}; });
+    await page.goto("/donations/batches");
+    await page.getByTestId("year-pill-2025").click();
+    await page.getByTestId("print-batches-button").click();
+    await expect(page).toHaveURL(/start=2025-01-01&end=2025-12-31/);
+    await expect(page.getByTestId("batch-print-document").filter({ hasText: "March 2, 2025 Batch" })).toHaveCount(1, { timeout: 15000 });
+
+    await page.goto("/donations/batches");
+    await page.getByTestId("year-pill-2026").click();
+    await page.getByTestId("print-batches-button").click();
+    await expect(page).toHaveURL(/start=2026-01-01&end=2026-12-31/);
+    await expect(page.getByTestId("batch-print-document").or(page.getByTestId("print-batches-empty")).first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText("March 2, 2025 Batch")).toHaveCount(0);
+  });
+
+  // Issue #1385: the printout carries the church letterhead.
+  test("batch printout shows the church logo above the church name", async ({ page }) => {
+    await mockChurchLogo(page);
+    await page.addInitScript(() => { window.print = () => {}; });
+    await page.goto("/donations/batches/print-all?start=2025-03-01&end=2025-03-31");
+    const doc = page.getByTestId("batch-print-document").first();
+    await expect(doc).toBeVisible({ timeout: 15000 });
+    await expect(doc.getByTestId("print-church-logo")).toBeVisible();
+    await expect(doc.getByTestId("batch-print-church")).toHaveText("Grace Community Church");
+  });
 });
 
 // ChurchAppsSupport#1252: labeling donors is one names-and-photos call, not a full profile fetch.
@@ -913,5 +1111,316 @@ plainTest.describe("Print colors in dark mode", () => {
 
     const { color, luminance } = await printLuminanceOf(total);
     expect(luminance, "text color " + color).toBeLessThan(0.4);
+  });
+});
+
+// ChurchAppsSupport#1279: Edit Donations closes a counted batch; the seeded Donation Counter
+// (counter@b1.church, Donald Clark: Enter Donations + View Donations) can only work while it is open.
+const LOCK_BATCH_NAME = "Zebedee Counting Batch";
+const COUNTER_EMAIL = "counter@b1.church";
+
+async function apiAuthAs(ctx: APIRequestContext, email: string) {
+  const res = await ctx.post(`${API_BASE}/membership/users/login`, { data: { email, password: "password" } });
+  const body = await res.json();
+  const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+  return { headers: { Authorization: "Bearer " + (uc?.jwt as string) } };
+}
+
+async function signInAs(page: Page, email: string) {
+  await page.goto("/");
+  await page.locator('input[type="email"]').fill(email);
+  await page.fill('input[type="password"]', "password");
+  await page.click('button[type="submit"]');
+  const churchDialog = page.locator('[role="dialog"]').filter({ hasText: "Select a Church" });
+  await Promise.race([
+    churchDialog.waitFor({ state: "visible", timeout: 15000 }).catch(() => {}),
+    page.waitForURL((url) => !url.pathname.includes("/login"), { timeout: 15000 }).catch(() => {})
+  ]);
+  if (await churchDialog.isVisible().catch(() => false)) {
+    await page.locator('[role="dialog"] h3:has-text("Grace Community Church")').first().click();
+  }
+  await page.getByTestId("command-palette-open").waitFor({ state: "visible", timeout: 30000 });
+}
+
+test.describe.serial("Batch close and reopen", () => {
+  test.describe.configure({ retries: 0 });
+  let batchId: string;
+  let donationId: string;
+
+  test.beforeAll(async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    const batchRes = await ctx.post(`${API_BASE}/giving/donationbatches`, { ...auth, data: [{ name: LOCK_BATCH_NAME, batchDate: "2025-11-09" }] });
+    batchId = (await batchRes.json())[0].id;
+    const donationRes = await ctx.post(`${API_BASE}/giving/donations`, { ...auth, data: [{ batchId, personId: "PER00000080", donationDate: "2025-11-09", amount: 50, method: "Check", status: "complete" }] });
+    donationId = (await donationRes.json())[0].id;
+    await ctx.post(`${API_BASE}/giving/funddonations`, { ...auth, data: [{ donationId, fundId: "FUN00000001", amount: 50 }] });
+    await ctx.dispose();
+  });
+
+  test.afterAll(async () => {
+    if (!batchId) return;
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    await ctx.delete(`${API_BASE}/giving/donationbatches/${batchId}`, auth);
+    await ctx.dispose();
+  });
+
+  const counterPage = async (browser: Browser) => {
+    const context = await browser.newContext({ storageState: undefined });
+    const page = await context.newPage();
+    await signInAs(page, COUNTER_EMAIL);
+    return page;
+  };
+
+  test("Edit Donations closes a batch and the batch list shows it Closed", async ({ page }) => {
+    await page.goto(`/donations/batches/${batchId}`);
+    await expect(page.locator("#page-header-title")).toHaveText(LOCK_BATCH_NAME, { timeout: 15000 });
+    await expect(page.getByTestId("batch-status")).toHaveText("Open");
+
+    await page.getByTestId("close-batch-button").click();
+    await expect(page.getByTestId("batch-status")).toHaveText("Closed", { timeout: 10000 });
+    await expect(page.getByTestId("batch-closed-notice")).toBeVisible();
+    await expect(page.getByTestId("reopen-batch-button")).toBeVisible();
+    // Edit Donations can still correct a closed batch.
+    await expect(page.getByTestId("donation-row-" + donationId).getByRole("button", { name: "Edit" })).toBeVisible();
+
+    await page.goto("/donations/batches");
+    const row = page.locator("tr").filter({ has: page.getByRole("link", { name: LOCK_BATCH_NAME }) });
+    await expect(row.getByTestId("batch-row-status")).toHaveText("Closed", { timeout: 15000 });
+  });
+
+  test("Enter Donations cannot add to or change a closed batch", async ({ browser }) => {
+    const page = await counterPage(browser);
+    await page.goto(`/donations/batches/${batchId}`);
+    await expect(page.locator("#page-header-title")).toHaveText(LOCK_BATCH_NAME, { timeout: 15000 });
+    await expect(page.getByTestId("batch-closed-notice")).toBeVisible();
+    await expect(page.getByTestId("donation-row-" + donationId)).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("donation-row-" + donationId).getByRole("button", { name: "Edit" })).toHaveCount(0);
+    await expect(page.getByTestId("batch-add-donation-button")).toHaveCount(0);
+    await expect(page.getByTestId("edit-batch-button")).toHaveCount(0);
+    await expect(page.getByTestId("reopen-batch-button")).toHaveCount(0);
+
+    const ctx = await request.newContext();
+    const auth = await apiAuthAs(ctx, COUNTER_EMAIL);
+    const res = await ctx.post(`${API_BASE}/giving/donations`, { ...auth, data: [{ id: donationId, batchId, donationDate: "2025-11-09", amount: 5, method: "Check" }] });
+    expect(res.status()).toBe(403);
+    await ctx.dispose();
+    await page.context().close();
+  });
+
+  test("Edit Donations reopens the batch", async ({ page }) => {
+    await page.goto(`/donations/batches/${batchId}`);
+    await expect(page.getByTestId("batch-status")).toHaveText("Closed", { timeout: 15000 });
+    await page.getByTestId("reopen-batch-button").click();
+    await expect(page.getByTestId("batch-status")).toHaveText("Open", { timeout: 10000 });
+    await expect(page.getByTestId("batch-closed-notice")).toHaveCount(0);
+    await expect(page.getByTestId("close-batch-button")).toBeVisible();
+  });
+
+  test("Enter Donations adds and fixes donations in an open batch but cannot close it", async ({ browser }) => {
+    const page = await counterPage(browser);
+    await page.goto(`/donations/batches/${batchId}`);
+    await expect(page.locator("#page-header-title")).toHaveText(LOCK_BATCH_NAME, { timeout: 15000 });
+    await expect(page.getByTestId("batch-add-donation-button")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("donation-row-" + donationId).getByRole("button", { name: "Edit" })).toBeVisible();
+    await expect(page.getByTestId("close-batch-button")).toHaveCount(0);
+
+    await page.locator("button").getByText("Anonymous").click();
+    await page.locator('[data-testid="bulk-donation-amount"] input').fill("12.00");
+    const saved = page.waitForResponse((r) => /\/giving\/donations$/.test(r.url()) && r.request().method() === "POST", { timeout: 15000 });
+    await page.locator('[data-testid="add-donation-submit"]').click();
+    expect((await saved).status()).toBe(200);
+    await expect(page.locator('[data-testid^="donation-row-"]')).toHaveCount(2, { timeout: 10000 });
+    await page.context().close();
+  });
+});
+
+// Stripe-only tools follow the church's gateway: Grace (CHU00000001) uses Stripe, so the tools above stay;
+// here /gateways answers with a Paystack gateway, as for a church that does not give through Stripe.
+test.describe("Donations — Stripe tools hidden for non-Stripe gateways", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route(/\/giving\/gateways$/, async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({ json: [{ id: "GAT00000002", provider: "Paystack", publicKey: "pk_test", currency: "GHS" }] });
+    });
+    await page.goto("/donations/batches");
+    await expect(page.locator("button").getByText(/Add/).first()).toBeVisible({ timeout: 15000 });
+  });
+
+  test("Batches page hides the Import missing Stripe transactions button", async ({ page }) => {
+    await expect(page.getByTestId("print-batches-button")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator("a").filter({ hasText: /Import missing Stripe transactions/i })).toHaveCount(0);
+  });
+
+  test("Donations secondary nav hides Stripe Import but keeps the other items", async ({ page }) => {
+    const nav = await siblingNav(page);
+    await expect(nav.getByText("Batches").first()).toBeVisible({ timeout: 10000 });
+    await expect(nav.getByText("Giving Statements").first()).toBeVisible();
+    await expect(nav.getByText("Stripe Import")).toHaveCount(0);
+  });
+});
+
+// ChurchAppsSupport#1450: both manual entry forms show the church currency beside Amount and stamp it on the gift.
+// The gateway's currency is swapped to PHP in the page to stand in for a Philippine church; the demo gateway is not changed.
+const CURRENCY_BATCH_NAME = "Zacchaeus Peso Batch";
+
+test.describe("Manual entry records the church currency", () => {
+  test.describe.configure({ retries: 0 });
+  let batchId: string;
+
+  test.beforeAll(async () => {
+    const ctx = await request.newContext();
+    const batchRes = await ctx.post(`${API_BASE}/giving/donationbatches`, { ...(await apiAuth(ctx)), data: [{ name: CURRENCY_BATCH_NAME, batchDate: "2025-11-10" }] });
+    batchId = (await batchRes.json())[0].id;
+    await ctx.dispose();
+  });
+
+  test.afterAll(async () => {
+    if (!batchId) return;
+    const ctx = await request.newContext();
+    await ctx.delete(`${API_BASE}/giving/donationbatches/${batchId}`, await apiAuth(ctx));
+    await ctx.dispose();
+  });
+
+  const openPesoBatch = async (page: Page) => {
+    await page.route(/\/giving\/gateways$/, async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      const res = await route.fetch();
+      const rows = await res.json();
+      await route.fulfill({ response: res, json: Array.isArray(rows) ? rows.map((g: any) => ({ ...g, currency: "php" })) : rows });
+    });
+    await page.goto(`/donations/batches/${batchId}`);
+    await page.getByTestId("bulk-donation-anonymous").click();
+  };
+  const postedDonation = (page: Page) => page.waitForRequest((r) => /\/giving\/donations$/.test(r.url()) && r.method() === "POST");
+
+  test("quick Add Donation shows PHP beside Amount and saves the gift in PHP", async ({ page }) => {
+    await openPesoBatch(page);
+    await expect(page.getByTestId("bulk-donation-currency")).toHaveText("PHP", { timeout: 10000 });
+    await page.locator('[data-testid="bulk-donation-amount"] input').fill("500");
+    const donationReq = postedDonation(page);
+    await page.getByTestId("add-donation-submit").click();
+    const posted = (await donationReq).postDataJSON()[0];
+    expect(posted.currency).toBe("php");
+    expect(posted.fundDonations[0].currency).toBe("php");
+  });
+
+  test("full donation editor saves a new gift in the church currency", async ({ page }) => {
+    await openPesoBatch(page);
+    await page.getByTestId("bulk-donation-full-editor").click();
+    const box = page.locator("#donationBox");
+    await box.locator('input[name="amount"]').fill("250");
+    const donationReq = postedDonation(page);
+    await box.locator("button").getByText("Save").click();
+    const posted = (await donationReq).postDataJSON()[0];
+    expect(posted.currency).toBe("php");
+    expect(posted.fundDonations[0].currency).toBe("php");
+  });
+});
+
+// "Recent people" under the Person search box lists the people the admin just picked first.
+test.describe("Bulk donation entry — recent people", () => {
+  test.describe.configure({ retries: 0 });
+  const DEMO_BATCH = "/donations/batches/BAT00000001";
+  const JENNIFER_WILLIAMS = "PER00000011";
+
+  test("a person just picked is listed first under Recent people", async ({ browser }) => {
+    const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+    const page = await context.newPage();
+    try {
+      await login(page);
+      await page.goto(DEMO_BATCH);
+      const search = page.getByTestId("person-search-input").locator("input");
+      await expect(search).toBeVisible({ timeout: 15000 });
+      await search.fill("Jennifer Williams");
+      await page.getByTestId(`add-person-button-${JENNIFER_WILLIAMS}`).click();
+
+      await page.getByTestId("bulk-donation-change-person").click();
+      await expect(page.getByText("Recent people")).toBeVisible({ timeout: 15000 });
+      const firstRow = page.locator("#householdMemberAddTable tr").first();
+      await expect(firstRow).toContainText("Jennifer Williams", { timeout: 15000 });
+    } finally {
+      await context.close();
+    }
+  });
+});
+
+// Deleting a batch from its own page (Edit Batch → Delete) returns to the Batches list instead of a dead page.
+test.describe("Batch delete from the batch page", () => {
+  test.describe.configure({ retries: 0 });
+
+  test("Edit Batch → Delete goes back to the Batches list", async ({ page }) => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    const name = "Zebedee Doomed Batch " + Date.now();
+    const batchId = (await (await ctx.post(`${API_BASE}/giving/donationbatches`, { ...auth, data: [{ name, batchDate: "2025-09-14" }] })).json())[0].id;
+    try {
+      await page.goto("/donations/batches/" + batchId);
+      await page.getByTestId("edit-batch-button").click();
+      const deleted = page.waitForResponse((r) => r.url().includes("/giving/donationbatches/" + batchId) && r.request().method() === "DELETE");
+      await page.locator("#batchBox").getByRole("button", { name: "Delete" }).click();
+      await confirmDelete(page);
+      await deleted;
+      await expect(page).toHaveURL(/\/donations\/batches$/);
+      await expect(page.getByTestId("add-batch-button")).toBeVisible();
+      await expect(page.locator("a").getByText(name)).toHaveCount(0);
+    } finally {
+      await ctx.delete(`${API_BASE}/giving/donationbatches/${batchId}`, auth).catch(() => {});
+      await ctx.dispose();
+    }
+  });
+});
+
+// An empty or zero amount is refused with a message instead of silently doing nothing (quick entry)
+// or saving a $0 gift with no fund (full editor). The full editor starts a new gift on the batch date.
+test.describe("Donation entry validation", () => {
+  test.describe.configure({ retries: 0 });
+  const BATCH_DATE = "2025-08-17";
+  let ctx: APIRequestContext;
+  let auth: { headers: { Authorization: string } };
+  let batchId: string;
+
+  test.beforeAll(async () => {
+    ctx = await request.newContext();
+    auth = await apiAuth(ctx);
+    batchId = (await (await ctx.post(`${API_BASE}/giving/donationbatches`, { ...auth, data: [{ name: "Zebedee Validation Batch", batchDate: BATCH_DATE }] })).json())[0].id;
+  });
+
+  test.afterAll(async () => {
+    if (batchId) await ctx.delete(`${API_BASE}/giving/donationbatches/${batchId}`, auth);
+    await ctx.dispose();
+  });
+
+  const donationPosts = (page: Page) => {
+    const posts: string[] = [];
+    page.on("request", (r) => { if (/\/giving\/donations$/.test(r.url()) && r.method() === "POST") posts.push(r.url()); });
+    return posts;
+  };
+
+  test("quick entry explains an empty amount instead of ignoring the click", async ({ page }) => {
+    const posts = donationPosts(page);
+    await page.goto("/donations/batches/" + batchId);
+    await page.getByTestId("bulk-donation-anonymous").click();
+    await page.getByTestId("add-donation-submit").click();
+    await expect(page.getByText("Enter an amount greater than zero")).toBeVisible();
+    await page.getByTestId("bulk-donation-amount").locator("input").fill("0");
+    await page.getByTestId("bulk-donation-amount").locator("input").press("Enter");
+    await expect(page.getByText("Enter an amount greater than zero")).toBeVisible();
+    expect(posts).toHaveLength(0);
+  });
+
+  test("full donation editor starts on the batch date and refuses a gift with no amount", async ({ page }) => {
+    const posts = donationPosts(page);
+    await page.goto("/donations/batches/" + batchId);
+    await page.getByTestId("bulk-donation-anonymous").click();
+    await page.getByTestId("bulk-donation-full-editor").click();
+    const box = page.locator("#donationBox");
+    await expect(box.getByTestId("donation-date-input").locator("input")).toHaveValue(BATCH_DATE);
+    await box.getByRole("button", { name: "Save" }).click();
+    await expect(box.getByText("Enter an amount greater than zero")).toBeVisible();
+    expect(posts).toHaveLength(0);
+    const saved = await (await ctx.get(`${API_BASE}/giving/donations?batchId=${batchId}`, auth)).json();
+    expect(saved).toHaveLength(0);
   });
 });

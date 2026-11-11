@@ -9,7 +9,7 @@ import { Section } from "./Section";
 import React from "react";
 import { Theme, DroppableArea } from "@churchapps/apphelper/website";
 import { SectionBlock } from "./SectionBlock";
-import { StyleHelper } from "@churchapps/apphelper/website";
+import { StyleHelper } from "../apphelperWebsite";
 import { ElementAdd } from "./elements/ElementAdd";
 import { ElementEdit } from "./elements/ElementEdit";
 import { SectionEdit } from "./SectionEdit";
@@ -31,7 +31,7 @@ import { SectionTemplatePicker } from "./templates/SectionTemplatePicker";
 import { buildTemplateSection, remapSectionContent, type SectionTemplateDef } from "./templates/sectionTemplates";
 import { trackSave, resetSaveStatus, subscribeSaveStatus, getSaveStatus, getLastSavedAt } from "./saveStatusTracker";
 import { setActiveSiteSubDomain } from "../siteCache";
-import { EDITOR_HOVER_CSS, getSelectionSuppressCss } from "./editorCss";
+import { EDITOR_HOVER_CSS, EDITOR_PAGE_FONT_CSS, EDITOR_SECTION_CSS, getSelectionSuppressCss } from "./editorCss";
 import { AddSectionDivider } from "./AddSectionDivider";
 import { SelectionBreadcrumb, type BreadcrumbCrumb } from "./SelectionBreadcrumb";
 import { AiRewriteDialog } from "../components/AiRewriteDialog";
@@ -247,7 +247,7 @@ export function ContentEditor(props: Props) {
 
   useEffect(() => {
     if (container && !initialSnapshotSavedRef.current) {
-      saveSnapshot(container, "Initial state");
+      saveSnapshot(container, "Initial state", { persist: false });
       initialSnapshotSavedRef.current = true;
     }
   }, [container, saveSnapshot]);
@@ -461,7 +461,7 @@ export function ContentEditor(props: Props) {
       return;
     }
 
-    let target: { sectionId: string; blockId?: string; parentId?: string; sort: number } | null = null;
+    let target: { sectionId: string; blockId?: string; parentId?: string | null; sort: number } | null = null;
     if (selectedElementId) {
       const path = findElementPath(selectedElementId);
       if (path?.section) target = { sectionId: path.section.id || "", blockId: path.section.blockId, parentId: path.element.parentId, sort: (path.element.sort || 0) + 0.1 };
@@ -534,7 +534,6 @@ export function ContentEditor(props: Props) {
             key={section.id}
             section={section}
             churchSettings={churchSettings}
-            onEdit={handleSectionEdit}
             onMove={() => {
               loadDataInternal("After moving element");
             }}
@@ -549,12 +548,13 @@ export function ContentEditor(props: Props) {
             onElementDuplicate={handleElementDuplicate}
             onElementMove={handleElementMove}
             onElementUpdate={handleSpacingUpdate}
-            onSectionClick={(s) => handleSectionEdit(s, null)}
-            onSectionMove={handleSectionMove}
-            onSectionDuplicate={handleSectionDuplicate}
-            onSectionDelete={(s) => setPendingDeleteSection(s)}
-            onSectionSwitchLayout={(s) => setSwitchSection(s)}
-            onSectionAiRewrite={openAiRewrite}
+            onEdit={elementOnlyMode ? (_section, element) => { if (element) handleSectionEdit(null, element); } : handleSectionEdit}
+            onSectionClick={elementOnlyMode ? undefined : (s) => handleSectionEdit(s, null)}
+            onSectionMove={elementOnlyMode ? undefined : handleSectionMove}
+            onSectionDuplicate={elementOnlyMode ? undefined : handleSectionDuplicate}
+            onSectionDelete={elementOnlyMode ? undefined : (s) => setPendingDeleteSection(s)}
+            onSectionSwitchLayout={elementOnlyMode ? undefined : (s) => setSwitchSection(s)}
+            onSectionAiRewrite={elementOnlyMode ? undefined : openAiRewrite}
             isFirstSection={index === 0}
             isLastSection={index === sections.length - 1}
             isSectionEditing={!!editSection && editSection.id === section.id}
@@ -572,6 +572,8 @@ export function ContentEditor(props: Props) {
 
   const handleSectionEdit = (s: SectionInterface | null, e: ElementInterface | null) => {
     if (s) {
+      // Element blocks are given a stand-in section with no id. It is not a real section, so it has no settings.
+      if (elementOnlyMode && !s.id) return;
       if (s.targetBlockId) requestPanelChange({ kind: "blockNav", blockId: s.targetBlockId });
       else requestPanelChange({ kind: "section", section: s });
     } else if (e) {
@@ -683,7 +685,7 @@ export function ContentEditor(props: Props) {
     const path = findElementPath(editElement.id);
     if (!path) return null;
     const crumbs: BreadcrumbCrumb[] = [
-      { label: Locale.label("site.section.section"), onClick: () => handleSectionEdit(path.section, null) },
+      ...(elementOnlyMode ? [] : [{ label: Locale.label("site.section.section"), onClick: () => handleSectionEdit(path.section, null) }]),
       ...path.ancestors.map((a) => ({ label: getElementTypeMeta(a.elementType).label, onClick: () => handleElementClick(a.id || "") })),
       { label: getElementTypeMeta(path.element.elementType).label }
     ];
@@ -982,6 +984,8 @@ export function ContentEditor(props: Props) {
       <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 64px)", overflow: "hidden", backgroundColor: lightEditorTheme.palette.background.default }}>
         <Theme globalStyles={props.config?.globalStyles && { ...props.config.globalStyles, customJS: "" }} appearance={props.config?.appearance} />
         {fontUrls.map((url) => <link key={url} rel="stylesheet" href={url} precedence="default" />)}
+        <style>{EDITOR_PAGE_FONT_CSS}</style>
+        <style>{EDITOR_SECTION_CSS}</style>
         <style>{css}</style>
         <style>{hoverCss}</style>
 

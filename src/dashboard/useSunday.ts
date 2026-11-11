@@ -1,7 +1,7 @@
 import { ApiHelper, ArrayHelper, DateHelper, Permissions, UserHelper } from "@churchapps/apphelper";
 import type { ApiListType, AssignmentInterface, GroupInterface, PersonInterface, PositionInterface, TimeInterface, VisitInterface } from "@churchapps/helpers";
 import { useQuery } from "@tanstack/react-query";
-import { type PlanInterface, type PlanItemInterface } from "../helpers";
+import { type PlanInterface, type PlanItemInterface, hasPlansEditAccess } from "../helpers";
 
 export interface OrderItem {
   label: string;
@@ -32,6 +32,7 @@ export interface RoomCount {
 
 export interface SundayData {
   plan?: PlanInterface | null;
+  canOpenPlan?: boolean;
   planStart?: Date | null;
   focusDate?: Date | null;
   order: OrderItem[];
@@ -226,6 +227,7 @@ const loadSunday = async (): Promise<SundayData> => {
   const people = (canPeople && peopleIds.length > 0)
     ? await safeGet<PersonInterface[]>("/people/ids?ids=" + peopleIds.join(","), "MembershipApi", [])
     : [];
+  const rank = new Map(people.map((p, i) => [p.id, i]));
 
   const serving: ServingPerson[] = [];
   (assignments || []).forEach((a) => {
@@ -240,11 +242,12 @@ const loadSunday = async (): Promise<SundayData> => {
       role: position?.name || position?.categoryName || ""
     });
   });
+  serving.sort((a, b) => (rank.get(a.personId) ?? Infinity) - (rank.get(b.personId) ?? Infinity));
 
   const guests: GuestChip[] = [];
   if (canPeople && personIds.length) {
     const byHousehold = new Map<string, PersonInterface[]>();
-    personIds.forEach((id) => {
+    [...personIds].sort((a, b) => (rank.get(a) ?? Infinity) - (rank.get(b) ?? Infinity)).forEach((id) => {
       const person = ArrayHelper.getOne(people, "id", id) as PersonInterface | null;
       if (!person) return;
       const visit = visitList.find((v: any) => v.personId === id);
@@ -268,8 +271,14 @@ const loadSunday = async (): Promise<SundayData> => {
     });
   }
 
+  // Same rule as the Serving menu: plan editors, the plan's ministry, or people serving on it.
+  const myPersonId = UserHelper.person?.id;
+  const servingOnPlan = !!myPersonId && assignPlan?.id === plan?.id && (assignments || []).some((a) => a.personId === myPersonId);
+  const canOpenPlan = !!plan?.id && (hasPlansEditAccess() || servingOnPlan
+    || (!!plan.ministryId && (await safeGet<GroupInterface[]>("/groups/my/ministry", "MembershipApi", [])).some((g) => g.id === plan.ministryId)));
+
   const focusDate = plan?.serviceDate ? startOfDay(DateHelper.toDate(plan.serviceDate)) : comingSunday;
-  return { plan, planStart, focusDate, order, inRoom, live, recap, isSunday, split, serving, guests, rooms };
+  return { plan, canOpenPlan, planStart, focusDate, order, inRoom, live, recap, isSunday, split, serving, guests, rooms };
 };
 
 export const useSunday = () => {

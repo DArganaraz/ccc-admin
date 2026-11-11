@@ -1,9 +1,10 @@
-import { request, type APIRequestContext, type Page } from "@playwright/test";
+import { request, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { peopleTest as test, loggedInTest, expect } from "./helpers/test-fixtures";
 import { navigateToPeople } from "./helpers/navigation";
-import { personDetailsEditButton, SEED_PEOPLE, openPersonRow, confirmDelete } from "./helpers/fixtures";
+import { personDetailsEditButton, SEED_PEOPLE, openPersonRow, confirmDelete, personAddButton } from "./helpers/fixtures";
 import { login } from "./helpers/auth";
 import { STORAGE_STATE_PATH } from "./global-setup";
+import { mockChurchLogo } from "./helpers/print-logo";
 
 // ZACCHAEUS/ZEBEDEE are test marker names.
 
@@ -87,7 +88,7 @@ test.describe("People Management", () => {
       );
       const donaldRow = page.locator("table tbody tr").filter({ hasText: "Donald Clark" }).first();
       await expect(donaldRow).toBeVisible({ timeout: 10000 });
-      await donaldRow.getByRole("link", { name: "Donald Clark", exact: true }).click();
+      await donaldRow.getByRole("link", { name: /Donald Clark/ }).click();
       await page.waitForURL(/\/people\/(?!demographics|lists)[^/?#]+/, { timeout: 10000, waitUntil: "commit" });
     });
 
@@ -295,6 +296,8 @@ test.describe("People Management", () => {
         await expect(seekNotes).toHaveValue("Zacchaeus Delete Target", { timeout: 10000 });
         // Edit mode shows material-icon delete button.
         const deleteBtn = page.getByTestId("notes-box").locator("button").getByText("delete", { exact: true });
+        // Delete asks "Delete this note? This cannot be undone." in a browser confirm.
+        page.once("dialog", (dialog) => dialog.accept());
         await deleteBtn.click();
         await expect(target).toHaveCount(0, { timeout: 15000 });
       });
@@ -375,7 +378,7 @@ test.describe("People Management", () => {
       await expect(donationBtn).toBeVisible({ timeout: 10000 });
       await donationBtn.click();
       const seekText = page.locator("td").getByText(/Donations will appear/i);
-      const donationRow = page.locator("td").getByText(/\$\d/).first();
+      const donationRow = page.locator("td").getByText(/\$\s?\d/).first();
       await expect(seekText.or(donationRow)).toBeVisible({ timeout: 10000 });
     });
 
@@ -484,6 +487,54 @@ test.describe("People Management", () => {
 
       await expect(nick).toHaveValue("Zacchaeus Unsaved");
     });
+
+    test("a person's title accepts custom text and suggestions, and stays within 10 characters", async ({ page }) => {
+      await openPersonRow(page, SEED_PEOPLE.PATRICIA);
+      await page.waitForURL(/\/people\/(?!demographics|lists)[^/?#]+/);
+
+      const title = page.locator("#prefix");
+      const saveAndReopen = async () => {
+        await page.locator("button").getByText("Save").click();
+        await expect(title).toHaveCount(0, { timeout: 10000 });
+        await page.reload();
+        await personDetailsEditButton(page).first().click();
+        await expect(title).toBeVisible({ timeout: 10000 });
+      };
+
+      await personDetailsEditButton(page).first().click();
+      await expect(page.getByLabel("Title", { exact: true })).toBeVisible({ timeout: 10000 });
+      const originalTitle = await title.inputValue();
+
+      // Same height as the name fields beside it.
+      const titleBox = await page.locator(".MuiOutlinedInput-root").filter({ has: title }).boundingBox();
+      const firstNameBox = await page.locator(".MuiOutlinedInput-root").filter({ has: page.locator("#first") }).boundingBox();
+      expect(titleBox?.height).toBe(firstNameBox?.height);
+
+      // Typed titles save without pressing Enter or picking from the list.
+      await title.fill("Deacon");
+      await saveAndReopen();
+      await expect(title).toHaveValue("Deacon");
+
+      await title.fill("");
+      await title.click();
+      await page.getByRole("option", { name: "Prof", exact: true }).click();
+      await saveAndReopen();
+      await expect(title).toHaveValue("Prof");
+
+      // people.prefix is varchar(10).
+      await title.fill("");
+      await title.pressSequentially("Archbishop Emeritus");
+      await expect(title).toHaveValue("Archbishop");
+
+      await title.fill("");
+      await saveAndReopen();
+      await expect(title).toHaveValue("");
+
+      // Put the seed person's title back.
+      await title.fill(originalTitle);
+      await saveAndReopen();
+      await expect(title).toHaveValue(originalTitle);
+    });
   });
 
   test.describe("Main Functions", () => {
@@ -591,8 +642,7 @@ test.describe("People Management", () => {
         await addBtn.click();
         await page.locator('input[name="personAddText"]').fill("Carol");
         await page.locator('[data-testid="search-button"]').click();
-        // Icon-only add button in results; data-testid="add-person-<id>".
-        const selBtn = page.locator('#householdMemberAddTable [data-testid^="add-person-"]').first();
+        const selBtn = personAddButton(page.locator("#householdMemberAddTable"), SEED_PEOPLE.CAROL);
         await expect(selBtn).toBeVisible({ timeout: 10000 });
         await selBtn.click();
         // Confirmation dialog when adding a person who is already in another household.
@@ -619,6 +669,80 @@ test.describe("People Management", () => {
       await expect(closeBtn).toBeVisible({ timeout: 10000 });
       await closeBtn.click();
       await expect(closeBtn).toHaveCount(0, { timeout: 10000 });
+    });
+
+    // ChurchAppsSupport#1448: Add Person asks title and mobile phone, and Add Household Member's
+    // "Add New Person" also asks the household role, so staff don't reopen each new person.
+    test.describe.serial("Add Person title, phone and household role", () => {
+      const API = process.env.API_BASE || "http://localhost:8084";
+      let ctx: APIRequestContext;
+      let auth: { headers: { Authorization: string } };
+      const created: string[] = [];
+
+      test.beforeAll(async () => {
+        ctx = await request.newContext();
+        const body = await (await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+        const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+        auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+        // A run that failed half way leaves its person behind, so its name would no longer come up empty.
+        for (const term of ["Zebedeeroletest", "Titletest"]) {
+          const found = await (await ctx.post(`${API}/membership/people/search`, { ...auth, data: { term } })).json();
+          for (const p of found || []) await ctx.delete(`${API}/membership/people/${p.id}`, auth);
+        }
+      });
+
+      test.afterAll(async () => {
+        for (const id of created) await ctx.delete(`${API}/membership/people/${id}`, auth).catch(() => { });
+        await ctx?.dispose();
+      });
+
+      test("Add Person saves a title and mobile phone", async ({ page }) => {
+        await page.locator('[data-testid="create-person-title"]').fill("Dr");
+        await page.locator('[name="first"]').fill("Zebedee");
+        await page.locator('[name="last"]').fill("Titletest");
+        await page.locator('[name="mobilePhone"]').fill("555-201-1448");
+        await page.locator('[type="submit"]').click();
+        await page.waitForURL(/\/people\/(?!demographics|lists)[^/?#]+/, { timeout: 10000 });
+        const id = new URL(page.url()).pathname.split("/").pop()!;
+        created.push(id);
+        const person = await (await ctx.get(`${API}/membership/people/${id}`, auth)).json();
+        expect(person.name.prefix).toBe("Dr");
+        expect(person.contactInfo.mobilePhone).toContain("555");
+      });
+
+      test("Add New Person from a household asks the household role", async ({ page }) => {
+        await openPersonRow(page, SEED_PEOPLE.DONALD);
+        await page.waitForURL(/\/people\/(?!demographics|lists)[^/?#]+/);
+        const donaldId = new URL(page.url()).pathname.split("/").pop()!;
+        await page.locator('#householdBox button[aria-label="Edit"]').first().click();
+        await page.locator('[data-testid="add-household-member-button"]').click();
+        await page.locator('input[name="personAddText"]').fill("Zebedeeroletest");
+        await page.locator('[data-testid="search-button"]').click();
+        await page.getByRole("button", { name: /Add (a )?New Person/ }).click();
+        const dialog = page.getByRole("dialog");
+        await dialog.locator('[name="first"]').fill("Zebedeeroletest");
+        await dialog.locator('[name="last"]').fill("Clark");
+        await dialog.locator('[data-testid="create-person-title"]').fill("Mr");
+        await dialog.locator('[data-testid="create-person-role"]').click();
+        await page.getByRole("option", { name: "Child" }).click();
+        await dialog.getByRole("button", { name: "Add" }).click();
+        await expect(dialog).toHaveCount(0, { timeout: 10000 });
+
+        // The new person goes straight into the household with the role picked in the dialog.
+        const newRow = page.locator("#householdMemberTable tr").filter({ has: page.getByText("Zebedeeroletest Clark") });
+        await expect(newRow.locator('[data-testid="household-role-select"]')).toContainText("Child", { timeout: 10000 });
+        await page.locator("button").getByText("Save").click();
+        await expect(page.locator("#householdBox").getByRole("link", { name: /Zebedeeroletest/ })).toHaveCount(1, { timeout: 10000 });
+
+        const donald = await (await ctx.get(`${API}/membership/people/${donaldId}`, auth)).json();
+        const members = await (await ctx.get(`${API}/membership/people/household/${donald.householdId}`, auth)).json();
+        const person = members.find((m: any) => m.name?.first === "Zebedeeroletest");
+        expect(person).toBeTruthy();
+        created.push(person.id);
+        expect(person.householdId).toBe(donald.householdId);
+        expect(person.householdRole).toBe("Child");
+        expect(person.name.prefix).toBe("Mr");
+      });
     });
 
     test("should cancel editing person details", async ({ page }) => {
@@ -1006,10 +1130,11 @@ test.describe("People Management", () => {
 
       await page.locator('[data-testid="email-person-button"]').click();
       const dialog = page.getByRole("dialog");
-      await expect(dialog.getByRole("heading", { name: `Email ${SEED_PEOPLE.DONALD}` })).toBeVisible({ timeout: 10000 });
+      await expect(dialog.getByRole("heading", { name: /^Email (Mr\. )?Donald Clark$/ })).toBeVisible({ timeout: 10000 });
       await expect(dialog.getByText(`Sending to ${SEED_PEOPLE.DONALD_EMAIL}`)).toBeVisible();
       await expect(dialog.locator('[data-testid="open-mail-app"]')).toBeVisible();
 
+      await expect(dialog.getByLabel("Subject")).toHaveAttribute("placeholder", "e.g. Hello {{firstName}}, update from {{churchName}}");
       await dialog.getByLabel("Subject").fill("Hello from Grace");
       // The second row of merge-field chips writes into the body.
       await dialog.getByText("First Name", { exact: true }).nth(1).click();
@@ -1022,6 +1147,23 @@ test.describe("People Management", () => {
       expect(posted.groupId).toBeUndefined();
       expect(posted.subject).toBe("Hello from Grace");
       expect(posted.htmlContent).toContain("{{firstName}}");
+    });
+
+    test("profile Email window waits for the review check before showing the editor", async ({ page }) => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      await page.route("**/emailTemplates/sendStatus", async (route) => {
+        await gate;
+        await route.fulfill({ json: { approved: false, paused: false, remaining: 0 } });
+      });
+      await openPersonRow(page, SEED_PEOPLE.DONALD);
+      await page.locator('[data-testid="email-person-button"]').click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible({ timeout: 10000 });
+      await expect(dialog.getByLabel("Subject")).toHaveCount(0);
+      release();
+      await expect(page.getByTestId("request-email-review")).toBeVisible({ timeout: 10000 });
+      await expect(dialog.getByLabel("Subject")).toHaveCount(0);
     });
 
     test("search with no matches renders an empty results state", async ({ page }) => {
@@ -1044,6 +1186,85 @@ test.describe("People Management", () => {
       const empty = page.getByText(/No attendance/i);
       await expect(rows.or(empty)).toBeVisible({ timeout: 10000 });
     });
+  });
+});
+
+// People page papercuts: Demographics drill-down, singular counts, clickable Advanced field names.
+loggedInTest.describe("People page papercuts", () => {
+  loggedInTest("a Demographics slice opens People filtered to that slice", async ({ page }) => {
+    await page.goto("/people/demographics");
+    const card = page.locator(".MuiCard-root").filter({ has: page.getByRole("heading", { name: "Marital Status" }) });
+    const legend = card.locator("svg text").filter({ hasText: /^Widowed$/ });
+    await expect(legend).toBeVisible({ timeout: 20000 });
+    await legend.click();
+    await page.waitForURL(/\/people$/);
+    await expect(page.getByTestId("people-results-bar")).toContainText(/people/, { timeout: 15000 });
+    // The filtered list used to show briefly, then the page remounted and refetched everyone.
+    await page.waitForLoadState("networkidle");
+    // Demo seed has five widowed people.
+    await expect(page.getByTestId("people-results-bar")).toContainText("· 5 people");
+  });
+});
+
+test.describe("People results and Advanced search", () => {
+  test("a one-person result says household and person in the singular", async ({ page }) => {
+    await page.locator('input[name="searchText"]').fill("Donald Clark");
+    const bar = page.getByTestId("people-results-bar");
+    await expect(bar).toContainText(/^1 household/, { timeout: 15000 });
+    await expect(bar).toContainText("1 household · 1 person");
+  });
+
+  test("clicking an Advanced search field name ticks its box", async ({ page }) => {
+    await page.locator("#peopleSearch").getByRole("button", { name: "Advanced", exact: true }).click();
+    const row = page.locator("#peopleSearch-advanced").getByText("Middle Name", { exact: true });
+    await expect(row).toBeVisible({ timeout: 10000 });
+    await row.click();
+    await expect(page.locator("span").getByText("1 active:")).toHaveCount(1);
+  });
+});
+
+// The columns dialog only picks columns, so it is not labeled as filters.
+test.describe("People columns dialog", () => {
+  test("is labeled for columns, not filters", async ({ page }) => {
+    await page.locator('[data-testid="columns-button"]').click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("heading", { name: "Select Columns" })).toBeVisible({ timeout: 10000 });
+    await expect(dialog.getByRole("button", { name: "Done" })).toBeVisible();
+    await expect(dialog.getByText("Apply Filters")).toHaveCount(0);
+  });
+});
+
+// In dark mode the attendance printout keeps dark text on white paper under the church letterhead.
+loggedInTest.describe("Person attendance print", () => {
+  loggedInTest("prints dark text under the church letterhead in dark mode", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("b1admin-theme-mode", "dark"));
+    await mockChurchLogo(page);
+    await page.goto("/people/PER00000080?view=attendance");
+    const sheet = page.locator(".attendance-print");
+    await expect(sheet).toBeVisible({ timeout: 15000 });
+    await page.emulateMedia({ media: "print" });
+
+    const title = sheet.getByText("Donald Clark — Attendance");
+    await expect(title).toBeVisible();
+    const color = await title.evaluate((n) => getComputedStyle(n).color);
+    const [r, g, b] = (color.match(/\d+/g) || []).map(Number);
+    expect(Math.max(r, g, b), `text color ${color}`).toBeLessThan(110);
+    await expect(sheet.locator('[data-testid="print-church-logo"]')).toBeVisible();
+  });
+});
+
+// In dark mode a printed form answer box must print on a light fill, since print text is dark.
+loggedInTest.describe("Person form answers print", () => {
+  loggedInTest("print on a light background in dark mode", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("b1admin-theme-mode", "dark"));
+    await page.goto("/people/PER00000079?view=forms&form=FRM00000001");
+    const answer = page.getByTestId("display-box-content").getByText("brian.harris@email.com");
+    await expect(answer).toBeVisible({ timeout: 15000 });
+    await page.emulateMedia({ media: "print" });
+
+    const bg = await answer.evaluate((n) => getComputedStyle(n.parentElement as Element).backgroundColor);
+    const [r, g, b] = (bg.match(/\d+/g) || []).map(Number);
+    expect(Math.min(r, g, b), `answer box background ${bg}`).toBeGreaterThan(200);
   });
 });
 
@@ -1101,5 +1322,185 @@ loggedInTest.describe("Person giving card - non-deductible funds", () => {
     const card = page.locator('[data-testid="person-giving-section"]');
     await expect(card).toBeVisible({ timeout: 15000 });
     await expect(card).toContainText(FUND_NAME, { timeout: 15000 });
+  });
+});
+
+// A person's "date added" is stamped when the record is created, so only people added from now
+// on carry one; the seeded people (Donald Clark) predate it and show nothing.
+loggedInTest.describe("Person date added and record dates", () => {
+  // One worker, so the person made in beforeAll is the only "Zebedee Newcomer".
+  loggedInTest.describe.configure({ mode: "default" });
+  const API = process.env.API_BASE || "http://localhost:8084";
+  let ctx: APIRequestContext;
+  let auth: { headers: { Authorization: string } };
+  let personId: string;
+
+  loggedInTest.beforeAll(async () => {
+    ctx = await request.newContext();
+    const loginRes = await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+    expect(loginRes.ok()).toBeTruthy();
+    const body = await loginRes.json();
+    const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001");
+    auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+    const res = await ctx.post(`${API}/membership/people`, { ...auth, data: [{ name: { first: "Zebedee", last: "Newcomer" }, contactInfo: {}, membershipStatus: "Visitor" }] });
+    expect(res.status()).toBe(200);
+    personId = (await res.json())[0].id;
+  });
+
+  loggedInTest.afterAll(async () => {
+    if (personId) await ctx.delete(`${API}/membership/people/${personId}`, auth);
+    await ctx.dispose();
+  });
+
+  loggedInTest.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("people.view", "table"));
+  });
+
+  loggedInTest("Select Columns offers Date Added and the table shows it", async ({ page }) => {
+    await page.goto("/people");
+    const searchText = page.locator('input[name="searchText"]');
+    await expect(searchText).toBeVisible({ timeout: 30000 });
+    await searchText.fill("Zebedee Newcomer");
+    await expect(page.locator("table tbody tr").filter({ hasText: "Zebedee Newcomer" })).toBeVisible({ timeout: 15000 });
+    await page.locator('[data-testid="columns-button"]').click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByTestId("column-checkbox-dateAdded").click();
+    await dialog.getByRole("button", { name: "Done" }).click();
+    await expect(page.getByRole("columnheader", { name: "Date Added" })).toBeVisible();
+    await expect(page.locator("table tbody tr").filter({ hasText: "Zebedee Newcomer" })).toContainText(String(new Date().getFullYear()));
+  });
+
+  loggedInTest("the profile shows when the person was added, and nothing for older people", async ({ page }) => {
+    await page.goto(`/people/${personId}`);
+    await expect(page.getByTestId("person-date-added")).toHaveText(new RegExp(`^Added .*${new Date().getFullYear()}`), { timeout: 15000 });
+    await page.goto("/people/PER00000080");
+    await expect(page.getByTestId("person-identity")).toContainText("Donald Clark", { timeout: 15000 });
+    await expect(page.getByTestId("person-date-added")).toHaveCount(0);
+  });
+
+  loggedInTest("Advanced search finds people added in the last N days", async ({ page }) => {
+    await page.goto("/people");
+    const advancedButton = page.locator("#peopleSearch").getByRole("button", { name: "Advanced", exact: true });
+    await expect(advancedButton).toBeVisible({ timeout: 30000 });
+    await advancedButton.click();
+    const advanced = page.locator("#peopleSearch-advanced");
+    await advanced.getByText("Membership & Groups", { exact: true }).click();
+    await advanced.getByText("Date Added", { exact: true }).click();
+    const days = page.getByTestId("filter-days-dateAdded");
+    await expect(days).toHaveValue("30");
+    const searched = page.waitForResponse((r) => r.url().includes("/people/advancedSearch") && r.status() === 200, { timeout: 10000 });
+    await days.fill("7");
+    await searched;
+    await expect(page.locator("table tbody tr").filter({ hasText: "Zebedee Newcomer" })).toBeVisible({ timeout: 10000 });
+    await expect(page.locator("table tbody tr").filter({ hasText: "Donald Clark" })).toHaveCount(0);
+  });
+
+  loggedInTest("the Groups card shows the date the person joined each group", async ({ page }) => {
+    await page.goto("/people/PER00000080");
+    await expect(page.getByTestId("group-joined-date").first()).toHaveText(/^Joined .*2024/, { timeout: 15000 });
+  });
+
+  loggedInTest("a form filled out once shows its submission date", async ({ page }) => {
+    // Brian Harris has a single Visitor Information Card submission.
+    await page.goto("/people/PER00000079?view=forms&form=FRM00000001");
+    await expect(page.getByTestId("submission-date")).toHaveText(/^Submitted .*2025/, { timeout: 15000 });
+    await expect(page.getByTestId("submission-picker")).toHaveCount(0);
+  });
+});
+
+// ChurchAppsSupport#1425: read a child and each person's standing off the list without opening the profile.
+test.describe("People table status and household role", () => {
+  const STATUSES = ["Visitor", "Guest", "Regular Attendee", "Member", "Staff", "Inactive", "Deceased"];
+  const chipColors = (chip: Locator) => chip.evaluate((el) => {
+    const style = getComputedStyle(el);
+    return style.color + " on " + style.backgroundColor;
+  });
+
+  test("a child shows a Child tag beside the status, and an adult does not", async ({ page }) => {
+    await page.getByTestId("people-view-table").click();
+    await page.locator('input[name="searchText"]').fill("Smith");
+    const child = page.locator("#peopleTable tbody tr").filter({ hasText: "James Smith" }).first();
+    await expect(child.getByTestId("person-child-tag")).toHaveText("Child", { timeout: 10000 });
+    await expect(child.getByText("Member", { exact: true })).toBeVisible();
+    const adult = page.locator("#peopleTable tbody tr").filter({ hasText: "John Smith" }).first();
+    await expect(adult).toBeVisible();
+    await expect(adult.getByTestId("person-child-tag")).toHaveCount(0);
+  });
+
+  test("all seven membership statuses have their own colour, and the profile matches the list", async ({ page }) => {
+    await page.route(/\/membership\/people\/list/, async (route) => {
+      const response = await route.fetch();
+      const people = await response.json();
+      await route.fulfill({ response, json: people.map((p: Record<string, unknown>, i: number) => (i < STATUSES.length ? { ...p, membershipStatus: STATUSES[i] } : p)) });
+    });
+    await page.route(/\/membership\/people\/[^/?]+$/, async (route) => {
+      if (route.request().method() !== "GET" || route.request().url().endsWith("/list")) return route.continue();
+      const response = await route.fetch();
+      const person = await response.json();
+      await route.fulfill({ response, json: { ...person, membershipStatus: "Guest" } });
+    });
+    await page.goto("/people");
+    await page.getByTestId("people-view-table").click();
+
+    const rows = page.locator("#peopleTable tbody tr");
+    const colors: Record<string, string> = {};
+    for (const status of STATUSES) {
+      const chip = rows.getByText(status, { exact: true }).first();
+      await expect(chip).toBeVisible({ timeout: 10000 });
+      colors[status] = await chipColors(chip);
+    }
+    expect(new Set(Object.values(colors)).size, JSON.stringify(colors)).toBe(STATUSES.length);
+
+    await openPersonRow(page, SEED_PEOPLE.DONALD);
+    const profileChip = page.getByTestId("person-identity").getByText("Guest", { exact: true });
+    await expect(profileChip).toBeVisible({ timeout: 10000 });
+    expect(await chipColors(profileChip)).toBe(colors.Guest);
+  });
+});
+
+test.describe("Person requests & registrations", () => {
+  const API_BASE = process.env.API_BASE || "http://localhost:8084";
+  let api: APIRequestContext;
+  let auth: { headers: Record<string, string> };
+  let demoPersonId = "";
+  let requestId = "";
+
+  test.beforeAll(async () => {
+    api = await request.newContext();
+    const login = await (await api.post(`${API_BASE}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+    const uc = login.userChurches.find((c: any) => c.church?.id === "CHU00000001");
+    auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+    demoPersonId = uc.person.id;
+    const start = new Date(Date.now() + 30 * 86400000);
+    const end = new Date(start.getTime() + 2 * 3600000);
+    const created = await (await api.post(`${API_BASE}/content/events/request`, { ...auth, data: { title: "ZACCHAEUS Youth Retreat", start, end, roomIds: ["RM000000001"] } })).json();
+    requestId = created.event.id;
+  });
+
+  test.afterAll(async () => {
+    if (requestId) await api.delete(`${API_BASE}/content/events/${requestId}`, auth);
+    await api.dispose();
+  });
+
+  test("a person's registrations show on their record", async ({ page }) => {
+    await openPersonRow(page, "Roberto Gonzalez");
+    const section = page.getByTestId("person-requests-section");
+    await expect(section.getByRole("heading", { name: "Requests & registrations" })).toBeVisible({ timeout: 10000 });
+    const row = section.locator("tbody tr").filter({ hasText: "Missions Conference" });
+    await expect(row).toContainText("Registration · 2 people");
+    await expect(row).toContainText("Registered");
+  });
+
+  test("a person's event request shows with its status and in All requests", async ({ page }) => {
+    await page.goto(`/people/${demoPersonId}`);
+    const section = page.getByTestId("person-requests-section");
+    const row = section.locator("tbody tr").filter({ hasText: "ZACCHAEUS Youth Retreat" });
+    await expect(row).toBeVisible({ timeout: 10000 });
+    await expect(row).toContainText("Event request · Sanctuary");
+    await expect(row).toContainText("Pending");
+    await page.getByTestId("person-requests-all").click();
+    await expect(page).toHaveURL(/view=requests/);
+    await expect(page.getByTestId("person-requests-section").locator("tbody tr").filter({ hasText: "ZACCHAEUS Youth Retreat" })).toBeVisible();
+    await expect(page.getByTestId("person-record-back")).toBeVisible();
   });
 });

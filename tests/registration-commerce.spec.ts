@@ -4,7 +4,7 @@ import { request } from "@playwright/test";
 import { loggedInTest as test, expect } from "./helpers/test-fixtures";
 import { login } from "./helpers/auth";
 import { STORAGE_STATE_PATH } from "./global-setup";
-import { confirmDelete } from "./helpers/fixtures";
+import { confirmDelete, personAddButton } from "./helpers/fixtures";
 
 // Phase 2 "Paid registrations" — B1Admin staff surface.
 //   - RegistrationSettingsEdit now hosts Attendee Types / Selections / Discount Codes accordions
@@ -224,6 +224,16 @@ test.describe.serial("Registrations Commerce — settings panels, paid roster, w
     await expect(page.locator('[data-testid="registration-unsaved-changes-alert"]')).toHaveCount(0, { timeout: 10000 });
   });
 
+  test("Changing a basic setting like Capacity does not show the type/selection/code warning", async ({ page: freshPage }) => {
+    // Own page so the dirty form's beforeunload guard never blocks the shared page's next navigation.
+    await freshPage.goto(`/registrations/${eventAId}?view=settings`);
+    await expect(freshPage.getByText(EVENT_A, { exact: false }).first()).toBeVisible({ timeout: 15000 });
+    const capacity = freshPage.locator('input[name="capacity"]');
+    await capacity.fill("25");
+    await expect(capacity).toHaveValue("25");
+    await expect(freshPage.locator('[data-testid="registration-unsaved-changes-alert"]')).toHaveCount(0);
+  });
+
   test("Add Attendee requires a type pick when attendee types exist", async () => {
     // Adult/Child both carry a price, which routes register() through the payment-required path.
     // A free third type isolates the type-pick UI assertion from gateway/payment concerns.
@@ -248,7 +258,7 @@ test.describe.serial("Registrations Commerce — settings panels, paid roster, w
 
     await dialog.locator('input[name="personAddText"]').fill("Demo User");
     await dialog.locator('[data-testid="search-button"]').click();
-    const addBtn = dialog.locator('[data-testid^="add-person-"]').first();
+    const addBtn = personAddButton(dialog, "Demo User");
     await expect(addBtn).toBeVisible({ timeout: 10000 });
     const registerPost = page.waitForResponse((r) => r.url().includes("/registrations/register") && r.request().method() === "POST", { timeout: 15000 });
     await addBtn.click();
@@ -299,13 +309,23 @@ test.describe.serial("Registrations Commerce — settings panels, paid roster, w
 
     const counts = page.locator('[data-testid="type-counts"]');
     await expect(counts).toContainText("General: 1");
-    await expect(counts).toContainText("Camper: 1");
+    await expect(counts).toContainText("Camper: 0"); // the Camper registrant is waitlisted
 
-    await expect(rosterCard.getByText("$ 0.00 / $ 45.00")).toBeVisible();
+    await expect(rosterCard.getByText("$0.00 / $45.00")).toBeVisible();
 
     // Waitlisted row exposes the Promote action.
     const waitRow = page.locator('[data-testid="registration-row"]').filter({ hasText: "Zacchaeus Waitlisted" });
     await expect(waitRow.locator('button[aria-label="Promote"]')).toBeVisible({ timeout: 10000 });
+  });
+
+  test("Capacity block counts confirmed registrants and lists the waitlist separately", async () => {
+    await page.goto(`/registrations/${eventBId}`);
+    const capacity = page.locator('[data-testid="registration-capacity"]');
+    await expect(capacity).toContainText("1 / 1", { timeout: 15000 });
+    await expect(capacity).toContainText("1 waitlisted");
+    const counts = page.locator('[data-testid="type-counts"]');
+    await expect(counts).toContainText("General: 1");
+    await expect(counts).toContainText("Camper: 0");
   });
 
   test("Registration details dialog lists members with type and any payments", async () => {
@@ -315,7 +335,7 @@ test.describe.serial("Registrations Commerce — settings panels, paid roster, w
     await expect(dialog).toBeVisible({ timeout: 10000 });
     await expect(dialog.getByText("Zacchaeus Waitlisted")).toBeVisible();
     await expect(dialog.getByText("Camper")).toBeVisible();
-    await expect(dialog.getByText("$ 0.00 / $ 45.00")).toBeVisible();
+    await expect(dialog.getByText("$0.00 / $45.00")).toBeVisible();
     await dialog.getByRole("button", { name: "Close" }).click();
     await expect(dialog).toHaveCount(0, { timeout: 5000 });
   });

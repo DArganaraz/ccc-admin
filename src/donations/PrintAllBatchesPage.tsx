@@ -5,9 +5,10 @@ import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import UserContext from "../UserContext";
 import { Box, CircularProgress, TextField, Typography } from "@mui/material";
-import { BatchPrintDocument } from "./components/BatchPrintDocument";
+import { BatchPrintDocument, setEnteredByName } from "./components/BatchPrintDocument";
 import { useRequirePermission } from "../hooks";
 import { loadPeopleNames } from "./loadPeopleNames";
+import { usePrintLogo } from "../components/PrintChurchHeader";
 
 const defaultStart = () => {
   const d = new Date();
@@ -23,6 +24,7 @@ export const PrintAllBatchesPage = () => {
   const [end, setEnd] = useState(searchParams.get("end") || DateHelper.formatHtml5Date(new Date()));
   const context = useContext(UserContext);
   const [currency, setCurrency] = useState<string>("usd");
+  const printLogo = usePrintLogo(context?.userChurch?.church?.id);
 
   const batches = useQuery<DonationBatchInterface[]>({ queryKey: ["/donationbatches", "GivingApi"], placeholderData: [] });
   const funds = useQuery<FundInterface[]>({ queryKey: ["/funds", "GivingApi"], placeholderData: [] });
@@ -47,8 +49,11 @@ export const PrintAllBatchesPage = () => {
     queryFn: async () => {
       const results: DonationInterface[][] = await Promise.all(batchIds.map((id) => ApiHelper.get("/donations?batchId=" + id, "GivingApi")));
       const all = results.flat();
-      const people: PersonInterface[] = await loadPeopleNames(ArrayHelper.getIds(all, "personId"));
-      all.forEach((d) => { if (d.personId) d.person = ArrayHelper.getOne(people, "id", d.personId); });
+      const people: PersonInterface[] = await loadPeopleNames([...ArrayHelper.getIds(all, "personId"), ...ArrayHelper.getIds(all, "enteredBy")]);
+      all.forEach((d) => {
+        if (d.personId) d.person = ArrayHelper.getOne(people, "id", d.personId);
+        setEnteredByName(d, people);
+      });
       const result: Record<string, DonationInterface[]> = {};
       batchIds.forEach((id, i) => { result[id] = results[i] || []; });
       return result;
@@ -63,11 +68,11 @@ export const PrintAllBatchesPage = () => {
   const hasPrinted = useRef(false);
 
   useEffect(() => {
-    if (autoprint && !isLoading && printable.length > 0 && !hasPrinted.current) {
+    if (autoprint && !isLoading && printable.length > 0 && printLogo.ready && !hasPrinted.current) {
       hasPrinted.current = true;
       window.print();
     }
-  }, [autoprint, isLoading, printable.length]);
+  }, [autoprint, isLoading, printable.length, printLogo.ready]);
 
   useEffect(() => {
     const handleAfterPrint = () => { if (autoprint) window.history.back(); };
@@ -104,6 +109,7 @@ export const PrintAllBatchesPage = () => {
         <Box key={batch.id} sx={{ p: 2, ...(index < printable.length - 1 ? { pageBreakAfter: "always", breakAfter: "page" } : {}) }}>
           <BatchPrintDocument
             churchName={context?.userChurch?.church?.name}
+            logoUrl={printLogo.logoUrl}
             batch={batch}
             donations={donationsByBatch.data?.[batch.id || ""] || []}
             fundDonations={fundDonations.data || []}

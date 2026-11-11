@@ -64,6 +64,9 @@ export const PeoplePage = memo(() => {
   const [loadAll, setLoadAll] = React.useState(false);
   const [allPeople, setAllPeople] = React.useState<PersonInterface[]>([]);
   const [maybeMore, setMaybeMore] = React.useState(true);
+  // Export from the unfiltered directory loads everyone first; only the first page is on screen until then.
+  const [exportPending, setExportPending] = React.useState(false);
+  const exportRef = React.useRef<HTMLDivElement>(null);
   const [toast, setToast] = React.useState<{ open: boolean; message: string; severity: "success" | "error" }>({
     open: false,
     message: "",
@@ -92,7 +95,7 @@ export const PeoplePage = memo(() => {
   const scrollToCreatePerson = useCallback(() => {
     const form = document.getElementById("createPersonForm");
     form?.scrollIntoView({ behavior: "smooth", block: "start" });
-    (form?.querySelector("input") as HTMLElement | null)?.focus();
+    (form?.querySelector("input[name='first']") as HTMLElement | null)?.focus();
   }, []);
 
   const columns = [
@@ -116,6 +119,7 @@ export const PeoplePage = memo(() => {
     { key: "maritalStatus", label: Locale.label("person.maritalStatus"), shortName: Locale.label("person.married") },
     { key: "anniversary", label: Locale.label("person.anniversary"), shortName: Locale.label("person.anniversary") },
     { key: "nametagNotes", label: Locale.label("people.peoplePage.nameNote"), shortName: Locale.label("common.notes") },
+    { key: "dateAdded", label: Locale.label("person.dateAdded"), shortName: Locale.label("person.dateAdded") },
     // Delete is only offered to users who can actually edit people - the Api rejects the
     // request otherwise. PeopleSearchResults intersects selectedColumns with this list, so
     // omitting it here also suppresses a stale deleteOption saved in localStorage.
@@ -190,6 +194,26 @@ export const PeoplePage = memo(() => {
     setLoadAll(true);
   }, []);
 
+  const handleExportAll = useCallback(() => {
+    setExportPending(true);
+    setLoadAll(true);
+  }, []);
+
+  React.useEffect(() => {
+    // Wait until the whole directory is the current result set, then click the real download link.
+    if (!exportPending || !loadAll || maybeMore || peopleQuery.isFetching || searchResults !== allPeople) return;
+    let tries = 0;
+    const timer = setInterval(() => {
+      const link = exportRef.current?.querySelector("a");
+      if (link || ++tries > 30) {
+        clearInterval(timer);
+        setExportPending(false);
+        link?.click();
+      }
+    }, 100);
+    return () => clearInterval(timer);
+  }, [exportPending, loadAll, maybeMore, peopleQuery.isFetching, searchResults, allPeople]);
+
   const handleSelectList = useCallback((list: ListInterface) => {
     const conditions = list.conditions;
     const requestId = ++listRequestRef.current;
@@ -221,10 +245,9 @@ export const PeoplePage = memo(() => {
 
   React.useEffect(() => {
     const conditions = (location.state as { searchConditions?: SearchCondition[] } | null)?.searchConditions;
-    if (conditions && conditions.length > 0) {
-      handleSelectList({ conditions });
-      navigate(location.pathname, { replace: true, state: null });
-    }
+    // Leave the drill-down conditions in history state: clearing them with navigate()
+    // re-renders the layout, which remounts this page without them.
+    if (conditions && conditions.length > 0) handleSelectList({ conditions });
 
   }, []);
 
@@ -383,6 +406,9 @@ export const PeoplePage = memo(() => {
   }, [householdsQuery.data]);
 
   const households = React.useMemo(() => groupHouseholds(searchResults || [], householdNames), [searchResults, householdNames]);
+  const peopleCount = searchResults?.length || 0;
+  const countKey = households.length !== 1 ? "people.directory.countHouseholds" : peopleCount === 1 ? "people.directory.countHouseholdOnePerson" : "people.directory.countHouseholdOne";
+  const countLabel = Locale.label(countKey).replace("{households}", households.length.toString()).replace("{people}", peopleCount.toString());
 
   const isLoading = !searchResults || (peopleQuery.isLoading && !isSearchPerformed && allPeople.length === 0);
   const canSaveList = canEdit && !!saveableCriteria && isSearchPerformed && !!searchResults && searchResults.length > 0;
@@ -449,7 +475,13 @@ export const PeoplePage = memo(() => {
         <HeaderTextButton onClick={handlePrint} data-testid="print-directory-button">
           {isSearchPerformed ? Locale.label("people.peoplePage.printResults") : Locale.label("people.peoplePage.printDirectory")}
         </HeaderTextButton>
-        {searchResults && <ExportButton data={getExportData(searchResults)} filename="people.csv" text={Locale.label("people.peoplePage.export")} />}
+        {searchResults && (
+          <Box ref={exportRef} data-testid="people-export">
+            {!isSearchPerformed && !loadAll && maybeMore
+              ? <ExportButton data={[]} text={Locale.label("people.peoplePage.export")} onRequestData={handleExportAll} />
+              : <ExportButton data={getExportData(searchResults)} filename="people.csv" text={Locale.label("people.peoplePage.export")} />}
+          </Box>
+        )}
         <PeopleColumns selectedColumns={selectedColumns} toggleColumn={handleToggleColumn} columns={columns} />
         {canSaveList && (
           <HeaderTextButton onClick={() => setSaveListDialog({ ...emptySaveListDialog, open: true })}>
@@ -501,7 +533,7 @@ export const PeoplePage = memo(() => {
                       />
                     )}
                     <Typography variant="body2" color="text.secondary">
-                      {!isLoading && Locale.label("people.directory.countHouseholds").replace("{households}", households.length.toString()).replace("{people}", (searchResults?.length || 0).toString())}
+                      {!isLoading && countLabel}
                     </Typography>
                   </Stack>
                 )}

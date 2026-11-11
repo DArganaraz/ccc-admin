@@ -606,6 +606,13 @@ export function ElementEdit(props: Props) {
         value={parsedData.label || ""}
         helperText={Locale.label("site.elements.categoriesHelper")}
       />
+      <FormControl fullWidth sx={{ mt: 2 }}>
+        <InputLabel>{Locale.label("site.elements.layout")}</InputLabel>
+        <Select fullWidth size="small" label={Locale.label("site.elements.layout")} name="layout" onChange={handleChange} value={parsedData.layout || "grid"} data-testid="group-list-layout-select">
+          <MenuItem value="grid">{Locale.label("site.elements.layoutGrid")}</MenuItem>
+          <MenuItem value="autoscroll">{Locale.label("site.elements.layoutAutoscroll")}</MenuItem>
+        </Select>
+      </FormControl>
     </>
   );
 
@@ -661,6 +668,13 @@ export function ElementEdit(props: Props) {
           <Select label="Show category dropdown" name="showCategory" value={parsedData.showCategory === false || parsedData.showCategory === "false" ? "false" : "true"} onChange={handleChange}>
             <MenuItem value="true">{Locale.label("common.yes")}</MenuItem>
             <MenuItem value="false">{Locale.label("common.no")}</MenuItem>
+          </Select>
+        </FormControl>
+        <FormControl fullWidth size="small" sx={{ marginTop: 2 }}>
+          <InputLabel>{Locale.label("site.elements.layout")}</InputLabel>
+          <Select label={Locale.label("site.elements.layout")} name="layout" onChange={handleChange} value={parsedData.layout || "grid"} data-testid="groups-layout-select">
+            <MenuItem value="grid">{Locale.label("site.elements.layoutGrid")}</MenuItem>
+            <MenuItem value="autoscroll">{Locale.label("site.elements.layoutAutoscroll")}</MenuItem>
           </Select>
         </FormControl>
       </>
@@ -767,8 +781,10 @@ export function ElementEdit(props: Props) {
 
   const getSocialIconsFields = () => (
     <>
-      {["facebook", "instagram", "youtube", "x", "tiktok", "vimeo", "podcast"].map((network) => (
-        <TextField key={network} fullWidth size="small" label={Locale.label("site.socialIconsEdit." + network)} name={network} value={parsedData[network] || ""} onChange={handleChange} onKeyDown={handleKeyDown} placeholder={Locale.label("placeholders.page.linkUrl")} data-testid={`social-${network}-input`} />
+      {[
+        "facebook", "instagram", "whatsapp", "youtube", "x", "tiktok", "vimeo", "podcast"
+      ].map((network) => (
+        <TextField key={network} fullWidth size="small" label={Locale.label("site.socialIconsEdit." + network)} name={network} value={parsedData[network] || ""} onChange={handleChange} onKeyDown={handleKeyDown} placeholder={network === "whatsapp" ? Locale.label("site.socialIconsEdit.whatsappPlaceholder") : Locale.label("placeholders.page.linkUrl")} data-testid={`social-${network}-input`} />
       ))}
       <FormControl fullWidth>
         <InputLabel>{Locale.label("site.socialIconsEdit.iconStyle")}</InputLabel>

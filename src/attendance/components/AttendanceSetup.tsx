@@ -78,7 +78,14 @@ export const AttendanceSetup = memo(() => {
     [removeEditors]
   );
 
-  const compare = useCallback((a: GroupInterface, b: GroupInterface) => (a.categoryName || "").localeCompare(b.categoryName || "") || (a.name || "").localeCompare(b.name || ""), []);
+  // Serving teams keep their ministry's id in categoryName; show the ministry's name instead of the raw id.
+  const categoryOf = useCallback((g?: GroupInterface) => {
+    if (!g) return "";
+    if ((g.tags || "").split(",").includes("team")) return ArrayHelper.getOne(groups.data || [], "id", g.categoryName)?.name || "";
+    return g.categoryName || "";
+  }, [groups.data]);
+
+  const compare = useCallback((a: GroupInterface, b: GroupInterface) => categoryOf(a).localeCompare(categoryOf(b)) || (a.name || "").localeCompare(b.name || ""), [categoryOf]);
 
   const unassignedGroups = useMemo(() => {
     const result: GroupInterface[] = [];
@@ -145,21 +152,20 @@ export const AttendanceSetup = memo(() => {
       return rows;
     }
 
+    const getCampusHtml = (campus: CampusInterface) => (
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Icon fontSize="small" sx={{ color: "text.secondary" }}>church</Icon>
+        <Typography sx={{ fontWeight: 600 }}>
+          {campus.name}
+        </Typography>
+      </Stack>
+    );
+
     const getRow = (campus: CampusInterface, service: ServiceInterface | undefined, serviceTime: ServiceTimeInterface | undefined, group: GroupInterface | undefined, key: string, _isLast?: { campus?: boolean; service?: boolean }) => {
       const campusChanged = campus?.name !== lastCampus;
       const serviceChanged = service?.name !== lastService;
 
-      const campusHtml =
-        campus === undefined || !campusChanged ? (
-          <></>
-        ) : (
-          <Stack direction="row" spacing={1} alignItems="center">
-            <Icon fontSize="small" sx={{ color: "text.secondary" }}>church</Icon>
-            <Typography sx={{ fontWeight: 600 }}>
-              {campus.name}
-            </Typography>
-          </Stack>
-        );
+      const campusHtml = campus === undefined || !campusChanged ? <></> : getCampusHtml(campus);
 
       const serviceHtml =
         service === undefined || (service?.name === lastService && !campusChanged) ? (
@@ -206,13 +212,13 @@ export const AttendanceSetup = memo(() => {
         );
 
       const categoryHtml =
-        group === undefined || group?.categoryName === lastCategory ? (
+        group === undefined || categoryOf(group) === lastCategory ? (
           <></>
         ) : (
           <Stack direction="row" spacing={1} alignItems="center">
             <Icon fontSize="small" sx={{ color: "text.secondary" }}>folder</Icon>
             <Typography variant="body2" color="text.secondary">
-              {group.categoryName}
+              {categoryOf(group)}
             </Typography>
           </Stack>
         );
@@ -241,13 +247,14 @@ export const AttendanceSetup = memo(() => {
       lastCampus = campus?.name || "";
       lastService = service?.name || "";
       lastServiceTime = serviceTime?.name || "";
-      lastCategory = group?.categoryName || "";
+      lastCategory = categoryOf(group);
       return result;
     };
 
-    const getAddServiceRow = (campus: CampusInterface, key: string) => (
+    // withCampus: the campus has no services yet, so its name and the "+" share one row.
+    const getAddServiceRow = (campus: CampusInterface, key: string, withCampus?: boolean) => (
       <TableRow key={key}>
-        <TableCell sx={{ py: 0.5, border: 0 }}></TableCell>
+        <TableCell sx={{ py: 0.5, border: 0 }}>{withCampus ? getCampusHtml(campus) : null}</TableCell>
         <TableCell sx={{ py: 0.5, border: 0 }}>
           <AppIconButton
             label={Locale.label("common.add")}
@@ -307,8 +314,8 @@ export const AttendanceSetup = memo(() => {
       const servicesList = Object.values(services);
 
       if (servicesList.length === 0) {
-        // Campus with no services yet — show its header so a service can be added.
-        rows.push(getRow(campus, undefined, undefined, undefined, `campus-${campusIdx}`));
+        // Campus with no services yet — show its header with the add-service button on the same row.
+        rows.push(getAddServiceRow(campus, `add-svc-${campusIdx}`, true));
       } else {
         servicesList.forEach((serviceGroup: any, serviceIdx) => {
           serviceGroup.serviceTimes.forEach((a: any, stIdx: number) => {
@@ -325,16 +332,17 @@ export const AttendanceSetup = memo(() => {
 
           rows.push(getAddServiceTimeRow(serviceGroup.service, `add-st-${campusIdx}-${serviceIdx}`));
         });
+        rows.push(getAddServiceRow(campus, `add-svc-${campusIdx}`));
       }
-
-      rows.push(getAddServiceRow(campus, `add-svc-${campusIdx}`));
     });
 
     unassignedGroups.forEach((g) => {
       rows.push(getRow({ name: Locale.label("attendance.attendanceSetup.unassigned") }, undefined, undefined, g, `unassigned-${g.id}`));
     });
     return rows;
-  }, [attendance.data, campuses, getGroups, compare, unassignedGroups, selectService, selectServiceTime]);
+  }, [
+    attendance.data, campuses, getGroups, compare, categoryOf, unassignedGroups, selectService, selectServiceTime
+  ]);
 
   const table = useMemo(() => {
     if (attendance.isLoading) return <Loading />;

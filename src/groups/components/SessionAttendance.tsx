@@ -8,6 +8,8 @@ import { Print as PrintIcon } from "@mui/icons-material";
 import { AppIconButton } from "../../components/ui/AppIconButton";
 import { CountChip, ExportButton, Surface } from "../../components/ui";
 import { SessionStatusDialog } from "./SessionStatusDialog";
+import { useCanPrintRoster } from "../../helpers";
+import { canReadGroupAttendance } from "../attendanceAccess";
 
 interface Props {
   group: GroupInterface;
@@ -25,7 +27,7 @@ const checkinTypeChip = (type?: string) => {
   return null;
 };
 
-// Group member payloads only carry name.display, so fall back to its last word for the surname.
+// Fall back to the last word of name.display when a payload lacks name.last.
 const sortKey = (p?: PersonInterface) => {
   const display = (p?.name?.display || "").trim();
   const last = (p?.name?.last || display.split(" ").pop() || "").toLowerCase();
@@ -53,9 +55,11 @@ export const SessionAttendance: React.FC<Props> = memo((props) => {
   const [downloadData, setDownloadData] = React.useState<any[]>([]);
   const [checkinTypes, setCheckinTypes] = React.useState<Record<string, string>>({});
   const [showStatus, setShowStatus] = React.useState(false);
+  const canPrintRoster = useCanPrintRoster(group?.id);
   const loadSeqRef = React.useRef(0);
 
   const canEdit = useMemo(() => UserHelper.checkAccess(Permissions.attendanceApi.attendance.edit), []);
+  const canOpenProfile = useMemo(() => UserHelper.checkAccess(Permissions.membershipApi.people.view), []);
 
   React.useEffect(() => {
     if (!group?.id) return;
@@ -72,7 +76,7 @@ export const SessionAttendance: React.FC<Props> = memo((props) => {
     const seq = ++loadSeqRef.current;
     setExtraPeople([]);
     setMessage(null);
-    if (session?.id) {
+    if (session?.id && canReadGroupAttendance(group?.id)) {
       ApiHelper.get("/visitsessions?sessionId=" + session.id, "AttendanceApi").then((vs: VisitSessionInterface[]) => {
         if (seq !== loadSeqRef.current) return;
         setVisitSessions(vs);
@@ -95,6 +99,10 @@ export const SessionAttendance: React.FC<Props> = memo((props) => {
         } else {
           setPeople([]);
         }
+      }).catch(() => {
+        if (seq !== loadSeqRef.current) return;
+        setVisitSessions([]);
+        setPeople([]);
       });
     } else {
       setVisitSessions([]);
@@ -103,13 +111,13 @@ export const SessionAttendance: React.FC<Props> = memo((props) => {
       setAttendance({});
       setOriginalAttendance({});
     }
-  }, [session?.id]);
+  }, [session?.id, group?.id]);
 
   const loadDownloadData = useCallback(() => {
-    if (session?.id) {
-      ApiHelper.get("/visitsessions/download/" + session.id, "AttendanceApi").then((data: any) => setDownloadData(data));
+    if (session?.id && canReadGroupAttendance(group?.id)) {
+      ApiHelper.get("/visitsessions/download/" + session.id, "AttendanceApi").then((data: any) => setDownloadData(data)).catch(() => setDownloadData([]));
     }
-  }, [session?.id]);
+  }, [session?.id, group?.id]);
 
   React.useEffect(() => {
     loadAttendance();
@@ -170,18 +178,27 @@ export const SessionAttendance: React.FC<Props> = memo((props) => {
   const hasChanges = changes.toAdd.length > 0 || changes.toRemove.length > 0;
   const presentCount = roster.filter((r) => attendance[r.person.id!]).length;
 
+  // Closing or reloading the tab mid-save would drop whatever hasn't been sent yet.
+  React.useEffect(() => {
+    if (!saving) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [saving]);
+
   const handleSave = useCallback(async () => {
     if (!session?.id) return;
     setSaving(true);
     setMessage(null);
     try {
-      for (const personId of changes.toAdd) {
-        const v = { checkinTime: new Date(), personId, visitSessions: [{ sessionId: session.id }] } as VisitInterface;
-        await ApiHelper.post("/visitsessions/log", v, "AttendanceApi");
-      }
-      for (const personId of changes.toRemove) {
-        await ApiHelper.delete("/visitsessions?sessionId=" + session.id + "&personId=" + personId, "AttendanceApi");
-      }
+      // Each change is a different person, so they can all go out at once.
+      await Promise.all([
+        ...changes.toAdd.map((personId) => {
+          const v = { checkinTime: new Date(), personId, visitSessions: [{ sessionId: session.id }] } as VisitInterface;
+          return ApiHelper.post("/visitsessions/log", v, "AttendanceApi");
+        }),
+        ...changes.toRemove.map((personId) => ApiHelper.delete("/visitsessions?sessionId=" + session.id + "&personId=" + personId, "AttendanceApi"))
+      ]);
       loadAttendance();
       loadDownloadData();
       onSaved?.();
@@ -209,8 +226,12 @@ export const SessionAttendance: React.FC<Props> = memo((props) => {
     { label: "personName", key: "personName" },
     { label: "status", key: "status" },
     { label: "personId", key: "personId" },
-    { label: "visitId", key: "visitId" }
+    { label: "visitId", key: "visitId" },
+    { label: "sessionNotes", key: "sessionNotes" }
   ];
+
+  // Repeat the session's notes on every row so the file stays one flat, sortable table.
+  const exportData = useMemo(() => (downloadData || []).map((row: any) => ({ ...row, sessionNotes: (session as any)?.notes || "" })), [downloadData, session]);
 
   if (!session) {
     return (
@@ -240,9 +261,13 @@ export const SessionAttendance: React.FC<Props> = memo((props) => {
           <Avatar src={PersonHelper.getPhotoUrl(person)} sx={{ width: 40, height: 40 }} />
         </TableCell>
         <TableCell>
-          <Link className="personName" to={"/people/" + personId}>
-            {person.name?.display}
-          </Link>
+          {canOpenProfile ? (
+            <Link className="personName" to={"/people/" + personId}>
+              {person.name?.display}
+            </Link>
+          ) : (
+            <span className="personName">{person.name?.display}</span>
+          )}
         </TableCell>
         <TableCell>
           {checkinTypeChip(checkinTypes[personId])}
@@ -254,9 +279,9 @@ export const SessionAttendance: React.FC<Props> = memo((props) => {
 
   return (
     <Surface>
-      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 2 }}>
-        <Box>
-          <Stack direction="row" spacing={1} alignItems="center">
+      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" useFlexGap spacing={1} sx={{ mb: 2 }}>
+        <Box sx={{ minWidth: 0 }}>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <Typography variant="h3" component="h2" data-cy="session-present-msg">
               {Locale.label("groups.groupSessions.attFor")} {group.name}
             </Typography>
@@ -268,20 +293,22 @@ export const SessionAttendance: React.FC<Props> = memo((props) => {
             {(session as any).serviceTime?.name && ` • ${(session as any).serviceTime.name}`}
           </Typography>
         </Box>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <AppIconButton label={Locale.label("groups.printRoster.print")} icon={<PrintIcon />} tone="card" onClick={() => openRoster("groupId=" + group.id)} data-testid="session-print-roster-button" />
+        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+          {canPrintRoster && <AppIconButton label={Locale.label("groups.printRoster.print")} icon={<PrintIcon />} tone="card" onClick={() => openRoster("groupId=" + group.id + (session.serviceTimeId ? "&serviceTimeId=" + session.serviceTimeId : ""))} data-testid="session-print-roster-button" />}
           {session.serviceTimeId && (
             <>
-              <Button size="small" onClick={() => openRoster("serviceTimeId=" + session.serviceTimeId)} data-testid="session-print-all-rosters-button">
-                {Locale.label("groups.printRoster.printAll")}
-              </Button>
+              {UserHelper.checkAccess(Permissions.membershipApi.groupMembers.view) && (
+                <Button size="small" onClick={() => openRoster("serviceTimeId=" + session.serviceTimeId)} data-testid="session-print-all-rosters-button">
+                  {Locale.label("groups.printRoster.printAll")}
+                </Button>
+              )}
               <Button size="small" onClick={() => setShowStatus(true)} data-testid="session-attendance-status-button">
                 {Locale.label("groups.groupSessions.statusButton")}
               </Button>
             </>
           )}
           {downloadData && downloadData.length > 0 && (
-            <ExportButton data={downloadData} filename={`${group.name}_visits.csv`} customHeaders={customHeaders} text={Locale.label("groups.groupsPage.export")} />
+            <ExportButton data={exportData} filename={`${group.name}_visits.csv`} customHeaders={customHeaders} text={Locale.label("groups.groupsPage.export")} />
           )}
         </Stack>
       </Stack>

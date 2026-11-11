@@ -1,4 +1,4 @@
-import React, { memo, useCallback } from "react";
+import { memo, useCallback } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { ApiHelper, DateHelper, UniqueIdHelper, Locale } from "@churchapps/apphelper";
 import { type DonationBatchInterface } from "@churchapps/helpers";
@@ -10,6 +10,9 @@ import { AppDatePicker } from "../../components";
 interface Props {
   batch: DonationBatchInterface;
   updatedFunction: () => void;
+  // Called instead of updatedFunction after a delete, so a page showing this batch can leave it.
+  deletedFunction?: () => void;
+  canDelete?: boolean;
 }
 
 type AnyRecord = Record<string, any>;
@@ -30,11 +33,11 @@ export const BatchEdit = memo((props: Props) => {
 
   const handleDelete = useCallback(async () => {
     if (await confirm(Locale.label("donations.batchEdit.confirmMsg"))) {
-      ApiHelper.delete("/donationbatches/" + batchId, "GivingApi").then(() => props.updatedFunction());
+      ApiHelper.delete("/donationbatches/" + batchId, "GivingApi").then(() => (props.deletedFunction || props.updatedFunction)());
     }
-  }, [batchId, props.updatedFunction, confirm]);
+  }, [batchId, props.updatedFunction, props.deletedFunction, confirm]);
 
-  const getDeleteFunction = useCallback(() => (!UniqueIdHelper.isMissing(batchId) ? handleDelete : undefined), [batchId, handleDelete]);
+  const getDeleteFunction = useCallback(() => (!UniqueIdHelper.isMissing(batchId) && props.canDelete !== false ? handleDelete : undefined), [batchId, handleDelete, props.canDelete]);
 
   const onValid = useCallback((values: AnyRecord) => {
     const batchToSave: DonationBatchInterface = { name: values.name, batchDate: values.date ? DateHelper.formatHtml5Date(values.date) : undefined };
@@ -66,4 +69,4 @@ export const BatchEdit = memo((props: Props) => {
       </FormCard>
     </>
   );
-}, (prev, next) => prev.batch?.id === next.batch?.id && prev.batch?.name === next.batch?.name && String(prev.batch?.batchDate || "") === String(next.batch?.batchDate || "") && prev.updatedFunction === next.updatedFunction);
+}, (prev, next) => prev.batch?.id === next.batch?.id && prev.batch?.name === next.batch?.name && String(prev.batch?.batchDate || "") === String(next.batch?.batchDate || "") && prev.updatedFunction === next.updatedFunction && prev.deletedFunction === next.deletedFunction && prev.canDelete === next.canDelete);

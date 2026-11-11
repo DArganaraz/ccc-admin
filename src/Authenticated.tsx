@@ -1,17 +1,19 @@
 import React, { Suspense } from "react";
-import { Routes, Route, useNavigate, Navigate, Outlet } from "react-router-dom";
+import { Routes, Route, useNavigate, useLocation, Navigate, Outlet } from "react-router-dom";
 import { Wrapper, ErrorBoundary, NotFound } from "./components";
-import { ApiHelper, DateHelper, NotificationService, UserHelper } from "@churchapps/apphelper";
+import { ApiHelper, DateHelper, NotificationService, Permissions, UserHelper } from "@churchapps/apphelper";
 import { Box } from "@mui/material";
 import { PageSkeleton } from "./components/ui/PageSkeleton";
 import UserContext from "./UserContext";
-import { hasPlansEditAccess } from "./helpers";
+import { hasAllGroupsAccess, hasPlansEditAccess } from "./helpers";
 import { churchBrandColor } from "./helpers/Themes";
+import { HYMNS_ENABLED } from "./hymns/enabled";
 import { useThemeMode } from "./ThemeContext";
 
 const PeoplePage = React.lazy(() => import("./people/PeoplePage").then((module) => ({ default: module.PeoplePage })));
 const PersonPage = React.lazy(() => import("./people/PersonPage").then((module) => ({ default: module.PersonPage })));
 const DemographicsPage = React.lazy(() => import("./people/demographics/DemographicsPage").then((module) => ({ default: module.DemographicsPage })));
+const NotesPage = React.lazy(() => import("./people/NotesPage").then((module) => ({ default: module.NotesPage })));
 const GroupsPage = React.lazy(() => import("./groups/GroupsPage"));
 const GroupPage = React.lazy(() => import("./groups/GroupPage").then((module) => ({ default: module.GroupPage })));
 const PendingRequestsPage = React.lazy(() => import("./groups/PendingRequestsPage"));
@@ -48,6 +50,7 @@ const SongPage = React.lazy(() => import("./serving/songs/SongPage").then((modul
 const PrintPlan = React.lazy(() => import("./serving/plans/PrintPlan").then((module) => ({ default: module.PrintPlan })));
 const DevicesPage = React.lazy(() => import("./profile/DevicesPage").then((module) => ({ default: module.DevicesPage })));
 const PrintDonationPage = React.lazy(() => import("./donations/PrintDonationPage").then((module) => ({ default: module.PrintDonationPage })));
+const PrintDonationReceiptPage = React.lazy(() => import("./donations/PrintDonationReceiptPage").then((module) => ({ default: module.PrintDonationReceiptPage })));
 const PrintAllStatementsPage = React.lazy(() => import("./donations/PrintAllStatementsPage").then((module) => ({ default: module.PrintAllStatementsPage })));
 const PrintAllBatchesPage = React.lazy(() => import("./donations/PrintAllBatchesPage").then((module) => ({ default: module.PrintAllBatchesPage })));
 const PrintDirectoryPage = React.lazy(() => import("./people/PrintDirectoryPage").then((module) => ({ default: module.PrintDirectoryPage })));
@@ -59,6 +62,7 @@ const SermonsPage = React.lazy(() => import("./sermons/SermonsPage").then((modul
 const LiveStreamTimesPage = React.lazy(() => import("./sermons/LiveStreamTimesPage").then((module) => ({ default: module.LiveStreamTimesPage })));
 const StreamSettingsPage = React.lazy(() => import("./sermons/StreamSettingsPage").then((module) => ({ default: module.StreamSettingsPage })));
 const BulkImportPage = React.lazy(() => import("./sermons/BulkImportPage").then((module) => ({ default: module.BulkImportPage })));
+const HymnsPage = React.lazy(() => import("./hymns/HymnsPage").then((module) => ({ default: module.HymnsPage })));
 const CalendarsPage = React.lazy(() => import("./calendars/CalendarsPage").then((module) => ({ default: module.CalendarsPage })));
 const CalendarPage = React.lazy(() => import("./calendars/CalendarPage").then((module) => ({ default: module.CalendarPage })));
 const RoomsResourcesPage = React.lazy(() => import("./calendars/RoomsResourcesPage").then((module) => ({ default: module.RoomsResourcesPage })));
@@ -70,6 +74,25 @@ const Site = React.lazy(() => import("./site").then((module) => ({ default: modu
 const Mobile = React.lazy(() => import("./mobile").then((module) => ({ default: module.Mobile })));
 
 const LoadingFallback: React.FC = () => <PageSkeleton />;
+
+// Module scope on purpose: declared inside Authenticated, every re-render made a new component
+// type, so React remounted the Header and the current page (closing the jump menu, resetting forms).
+const LayoutWithWrapper: React.FC = () => {
+  // New boundary per page: while a lazy page loads, show the skeleton instead of leaving the
+  // previous page on screen (and clickable) under the new URL. Also clears a page's error on navigation.
+  const { pathname } = useLocation();
+  return (
+    <Box sx={{ display: "flex" }}>
+      <Wrapper>
+        <ErrorBoundary key={pathname}>
+          <Suspense fallback={<LoadingFallback />}>
+            <Outlet />
+          </Suspense>
+        </ErrorBoundary>
+      </Wrapper>
+    </Box>
+  );
+};
 
 export const Authenticated: React.FC = () => {
   const navigate = useNavigate();
@@ -119,18 +142,6 @@ export const Authenticated: React.FC = () => {
   if (!context) return null;
   if (churchId && regionChurchId !== churchId) return <PageSkeleton />;
 
-  const LayoutWithWrapper: React.FC = () => (
-    <Box sx={{ display: "flex" }}>
-      <Wrapper>
-        <ErrorBoundary>
-          <Suspense fallback={<LoadingFallback />}>
-            <Outlet />
-          </Suspense>
-        </ErrorBoundary>
-      </Wrapper>
-    </Box>
-  );
-
   if (UserHelper.churchChanged) return null;
   else {
     return (
@@ -138,13 +149,14 @@ export const Authenticated: React.FC = () => {
         <Route element={<LayoutWithWrapper />}>
           <Route path="/admin/report/:keyName" element={<AdminReportPage />} />
           <Route path="/admin" element={<AdminPage />} />
-          <Route path="/people/demographics" element={<DemographicsPage />} />
-          <Route path="/people/:id" element={<PersonPage />} />
-          <Route path="/people" element={<PeoplePage />} />
+          <Route path="/people/notes" element={<NotesPage />} />
+          <Route path="/people/demographics" element={UserHelper.checkAccess(Permissions.membershipApi.people.view) ? <DemographicsPage /> : <Navigate to="/" replace />} />
+          <Route path="/people/:id" element={UserHelper.checkAccess(Permissions.membershipApi.people.view) ? <PersonPage /> : <Navigate to="/" replace />} />
+          <Route path="/people" element={UserHelper.checkAccess(Permissions.membershipApi.people.view) ? <PeoplePage /> : <Navigate to="/" replace />} />
           <Route path="/groups/pending" element={<PendingRequestsPage />} />
           <Route path="/groups/health" element={<GroupsHealthPage />} />
           <Route path="/groups/:id" element={<GroupPage />} />
-          <Route path="/groups" element={<GroupsPage />} />
+          <Route path="/groups" element={hasAllGroupsAccess() ? <GroupsPage /> : <Navigate to="/" replace />} />
           <Route path="/attendance" element={<AttendancePage />} />
           <Route path="/donations/funds/:id" element={<FundPage />} />
           <Route path="/donations/funds" element={<FundsPage />} />
@@ -171,6 +183,7 @@ export const Authenticated: React.FC = () => {
           <Route path="/serving/overview" element={<ServingOverviewPage />} />
           <Route path="/serving/planTypes/:id" element={<PlanTypePage />} />
           <Route path="/serving/plans/:id" element={<PlanPage />} />
+          <Route path="/serving/plans/:id/:section" element={<PlanPage />} />
           <Route path="/serving/plans" element={<ServingPage />} />
           <Route path="/serving" element={<Navigate to={hasPlansEditAccess() ? "/serving/plans" : "/serving/tasks"} replace />} />
           <Route path="/serving/songs" element={<SongsPage />} />
@@ -179,6 +192,7 @@ export const Authenticated: React.FC = () => {
           <Route path="/sermons/settings" element={<StreamSettingsPage />} />
           <Route path="/sermons/bulk" element={<BulkImportPage />} />
           <Route path="/sermons" element={<SermonsPage />} />
+          {HYMNS_ENABLED && <Route path="/hymns" element={<HymnsPage />} />}
           <Route path="/registrations/:eventId" element={<RegistrationDetailsPage />} />
           <Route path="/registrations" element={<RegistrationsPage />} />
           <Route path="/calendars/rooms" element={<RoomsResourcesPage />} />
@@ -214,6 +228,14 @@ export const Authenticated: React.FC = () => {
           element={
             <Suspense fallback={<LoadingFallback />}>
               <PrintDonationPage />
+            </Suspense>
+          }
+        />
+        <Route
+          path="/donations/receipt/:donationId"
+          element={
+            <Suspense fallback={<LoadingFallback />}>
+              <PrintDonationReceiptPage />
             </Suspense>
           }
         />

@@ -46,6 +46,14 @@ export const WorkflowBoardPage = () => {
     });
   };
 
+  const toggleSelectMany = (cardIds: string[], selected: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      cardIds.filter(Boolean).forEach((id) => { if (selected) next.add(id); else next.delete(id); });
+      return next;
+    });
+  };
+
   const handleDropCard = async (cardId: string, stepId: string) => {
     if (!canEdit) return;
     if (board.data?.cards?.find((c) => c.id === cardId)?.stepId === stepId) return;
@@ -105,7 +113,8 @@ export const WorkflowBoardPage = () => {
   const showTriggers = () => { setTab("triggers"); setEditWorkflow(null); setEditStep(null); };
 
   const getSlice = () => {
-    if (tab === "triggers") return <WorkflowTriggersManager workflowId={workflowId} canManage={canManage} />;
+    if (tab === "triggers" && board.data?.workflow?.workflowType === "assignmentConfirmation") return <Typography sx={{ p: 2 }}>{Locale.label("plans.confirmation.triggerHelp", "This workflow starts when new serving requests are issued from a published plan. Select it in the plan settings, then use Publish / Notify. Each assignment has a separate card; a reply closes only that request.")}</Typography>;
+    if (tab === "triggers") return <WorkflowTriggersManager workflowId={workflowId} canManage={canManage} onChanged={refetch} />;
     if (editWorkflow && canManage) {
       return (
         <Box sx={formWidthSx}>
@@ -116,7 +125,7 @@ export const WorkflowBoardPage = () => {
     if (editStep && canManage) {
       return (
         <Box sx={formWidthSx}>
-          <WorkflowStepEdit step={editStep} steps={steps} workflows={(workflows.data || []).filter((w) => w.id !== workflowId)}
+          <WorkflowStepEdit assignmentConfirmation={board.data?.workflow?.workflowType === "assignmentConfirmation"} step={editStep} steps={steps} workflows={(workflows.data || []).filter((w) => w.id !== workflowId)}
             onCancel={() => setEditStep(null)} onSave={(keepOpen) => { if (!keepOpen) setEditStep(null); refetch(); }} onDelete={() => { setEditStep(null); refetch(); }} />
         </Box>
       );
@@ -138,6 +147,7 @@ export const WorkflowBoardPage = () => {
               canManage={canManage}
               selectedIds={selectedIds}
               onToggleSelect={toggleSelect}
+              onSelectAll={toggleSelectMany}
               onDropCard={handleDropCard}
               onOpenCard={setOpenCard}
               onEditStep={setEditStep}

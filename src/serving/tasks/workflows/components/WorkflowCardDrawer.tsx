@@ -3,11 +3,12 @@ import { Link as RouterLink } from "react-router-dom";
 import React, { useContext } from "react";
 import { ApiHelper, type ConversationInterface, Notes, Locale, UserHelper, Permissions } from "@churchapps/apphelper";
 import { AppIconButton } from "../../../../components/ui/AppIconButton";
-import { Close as CloseIcon, Person as PersonIcon, CheckCircle as CompleteIcon, Snooze as SnoozeIcon, SkipNext as SkipIcon, Undo as SendBackIcon, PushPin as PinIcon, Phone as PhoneIcon, Email as EmailIcon } from "@mui/icons-material";
+import { Close as CloseIcon, Person as PersonIcon, CheckCircle as CompleteIcon, Snooze as SnoozeIcon, SkipNext as SkipIcon, Undo as SendBackIcon, PushPin as PinIcon, Phone as PhoneIcon, Email as EmailIcon, DeleteOutline as RemoveIcon } from "@mui/icons-material";
 import UserContext from "../../../../UserContext";
 import { ContentPicker } from "../../components/ContentPicker";
-import { type WorkflowStepInterface, type TaskInterface, type WorkflowStepRouteInterface, type UserContextInterface } from "@churchapps/helpers";
-import { canEditCard } from "../permissions";
+import { DateHelper, type WorkflowStepInterface, type TaskInterface, type WorkflowStepRouteInterface, type UserContextInterface } from "@churchapps/helpers";
+import { canEditCard, canViewWorkflows } from "../permissions";
+import { useConfirmDelete } from "../../../../hooks/useConfirmDelete";
 
 // MUI Link's `component` path does not land data-testid on the anchor, so the profile href check cannot see it.
 const ProfileLink = React.forwardRef<HTMLAnchorElement, React.ComponentProps<typeof RouterLink>>((props, ref) => (
@@ -21,6 +22,9 @@ interface Props {
   routes?: WorkflowStepRouteInterface[];
   onClose: () => void;
   onChanged: () => void;
+  showBoardLink?: boolean;
+  // False while the caller is still loading routes, so plain Complete cannot bypass a step's outcomes.
+  routesReady?: boolean;
 }
 
 export const WorkflowCardDrawer = (props: Props) => {
@@ -35,12 +39,14 @@ export const WorkflowCardDrawer = (props: Props) => {
       return [];
     }
   })();
+  const assignment = (() => { try { return JSON.parse(card.data || "{}").assignment; } catch { return null; } })();
   const context = useContext(UserContext);
   const [showPicker, setShowPicker] = React.useState(false);
   const [snoozeAnchor, setSnoozeAnchor] = React.useState<null | HTMLElement>(null);
   const editable = canEditCard(card);
   const isPersonCard = card.associatedWithType === "person" && !!card.associatedWithId;
   const [contact, setContact] = React.useState<{ mobilePhone?: string; email?: string }>({});
+  const { confirm, ConfirmDialogElement } = useConfirmDelete({ confirmLabel: Locale.label("tasks.workflowCard.remove"), "data-testid": "card-remove-confirm" });
 
   React.useEffect(() => {
     setContact({});
@@ -75,6 +81,13 @@ export const WorkflowCardDrawer = (props: Props) => {
     props.onClose();
   };
 
+  const remove = async () => {
+    if (!(await confirm(Locale.label("tasks.workflowCard.removeConfirm")))) return;
+    await ApiHelper.post("/tasks/" + card.id + "/remove", {}, "DoingApi");
+    props.onChanged();
+    props.onClose();
+  };
+
   const snooze = async (days: number) => {
     setSnoozeAnchor(null);
     await ApiHelper.post("/tasks/" + card.id + "/snooze", { days }, "DoingApi");
@@ -102,7 +115,15 @@ export const WorkflowCardDrawer = (props: Props) => {
           <Typography variant="h6" sx={{ fontWeight: 600 }}>{card.title || card.associatedWithLabel}</Typography>
           <AppIconButton label={Locale.label("common.close")} icon={<CloseIcon />} onClick={props.onClose} />
         </Stack>
+        {props.showBoardLink && card.workflowId && canViewWorkflows() && (
+          <Link component={RouterLink} to={"/serving/tasks/workflows/" + card.workflowId} variant="body2" data-testid="card-open-board">{Locale.label("tasks.workflowCard.openBoard")}</Link>
+        )}
         <Typography variant="body2" color="text.secondary">{Locale.label("tasks.workflowCard.assignedTo")}: {card.assignedToLabel || Locale.label("tasks.workflowBoard.unassigned")}</Typography>
+        {card.assignmentId && assignment && <Box sx={{ my: 1 }} data-testid="card-serving-request">
+          <Typography variant="body2">{assignment.positionName} · {String(assignment.serviceDate || "").slice(0, 10)}</Typography>
+          <Link component={RouterLink} to={"/serving/plans/" + assignment.planId}>{assignment.planName}</Link>
+          <Typography variant="caption" display="block">{Locale.label("plans.confirmation.cardHelp", "This card tracks one serving request. Recording follow-up as done keeps it open and assigned until the volunteer responds or the follow-up window ends.")}</Typography>
+        </Box>}
         {isPersonCard && (
           <Stack spacing={0.5} sx={{ mt: 1 }}>
             {contact.mobilePhone && (
@@ -125,12 +146,12 @@ export const WorkflowCardDrawer = (props: Props) => {
         {card.pinnedAssignment && <Typography variant="caption" color="primary" data-testid="card-pinned-note">{Locale.label("tasks.workflowCard.pinnedNote")}</Typography>}
 
         <Stack spacing={2} sx={{ mt: 2 }}>
-          <Box>
+          {steps.length > 0 && <Box>
             <Typography variant="caption" color="text.secondary">{Locale.label("tasks.workflowBoard.step")}</Typography>
             <Select fullWidth size="small" value={card.stepId || ""} disabled={!editable} data-testid="card-step-select" onChange={(e) => moveStep(e.target.value)}>
               {steps.map((s) => <MenuItem key={s.id} value={s.id}>{s.name}</MenuItem>)}
             </Select>
-          </Box>
+          </Box>}
 
           {editable && (
             <Stack direction="row" spacing={1}>
@@ -144,8 +165,8 @@ export const WorkflowCardDrawer = (props: Props) => {
             <Stack direction="row" spacing={1}>
               <Button variant="outlined" size="small" startIcon={<PersonIcon />} onClick={() => setShowPicker(true)}>{Locale.label("tasks.workflowCard.assign")}</Button>
               <Button variant="outlined" size="small" startIcon={<SnoozeIcon />} data-testid="card-snooze-button" onClick={(e) => setSnoozeAnchor(e.currentTarget)}>{Locale.label("tasks.workflowCard.snooze")}</Button>
-              {outcomes.length === 0 && (
-                <Button variant="contained" size="small" startIcon={<CompleteIcon />} data-testid="card-complete-button" onClick={() => complete()}>{Locale.label("tasks.workflowCard.complete")}</Button>
+              {outcomes.length === 0 && props.routesReady !== false && (
+                <Button variant="contained" size="small" startIcon={<CompleteIcon />} data-testid="card-complete-button" onClick={() => complete()}>{card.assignmentId ? Locale.label("plans.confirmation.followupDone", "Record follow-up done") : Locale.label("tasks.workflowCard.complete")}</Button>
               )}
             </Stack>
           )}
@@ -161,6 +182,12 @@ export const WorkflowCardDrawer = (props: Props) => {
             </Box>
           )}
 
+          {editable && (
+            <Box>
+              <Button variant="text" color="error" size="small" startIcon={<RemoveIcon />} data-testid="card-remove-button" onClick={remove}>{Locale.label("tasks.workflowCard.remove")}</Button>
+            </Box>
+          )}
+
           <Menu anchorEl={snoozeAnchor} open={Boolean(snoozeAnchor)} onClose={() => setSnoozeAnchor(null)}>
             <MenuItem onClick={() => snooze(1)} data-testid="snooze-1">{Locale.label("tasks.workflowCard.snooze1Day")}</MenuItem>
             <MenuItem onClick={() => snooze(3)}>{Locale.label("tasks.workflowCard.snooze3Days")}</MenuItem>
@@ -172,7 +199,10 @@ export const WorkflowCardDrawer = (props: Props) => {
               <Typography variant="caption" color="text.secondary">{Locale.label("tasks.workflowCard.history")}</Typography>
               <Stack spacing={0.25} sx={{ mt: 0.5 }}>
                 {history.map((h, i) => (
-                  <Typography key={i} variant="caption" data-testid={"history-entry-" + i}>• {h.message}</Typography>
+                  <Typography key={i} variant="caption" data-testid={"history-entry-" + i}>
+                    • {h.message}
+                    {h.date && <Box component="span" sx={{ color: "text.secondary", ml: 1 }} data-testid={"history-date-" + i}>{DateHelper.prettyDateTime(new Date(h.date))}</Box>}
+                  </Typography>
                 ))}
               </Stack>
             </Box>
@@ -182,6 +212,7 @@ export const WorkflowCardDrawer = (props: Props) => {
           <Notes context={context as UserContextInterface} conversationId={card.conversationId || ""} createConversation={handleCreateConversation as () => Promise<string>} />
         </Stack>
       </Box>
+      {ConfirmDialogElement}
       {showPicker && <ContentPicker onClose={() => setShowPicker(false)} onSelect={reassign} />}
     </Drawer>
   );

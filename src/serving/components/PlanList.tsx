@@ -1,7 +1,7 @@
 import React, { useCallback, memo } from "react";
 import { Box, Typography, Stack, Link, Menu, MenuItem, ListItemIcon, ListItemText, Table, TableBody, TableCell, TableHead, TableRow } from "@mui/material";
 import { PillTabs, Surface, TextAction, VerbRow, srOnlySx, tableScrollSx } from "../../components/ui";
-import { CalendarMonth as CalendarIcon, ContentCopyOutlined as TemplatesIcon, MenuBook as MenuBookIcon, DateRange as DateRangeIcon } from "@mui/icons-material";
+import { CalendarMonth as CalendarIcon, ContentCopyOutlined as TemplatesIcon, MenuBook as MenuBookIcon, DateRange as DateRangeIcon, WarningAmber as WarningIcon } from "@mui/icons-material";
 import { Link as RouterLink } from "react-router-dom";
 import { type GroupInterface } from "@churchapps/helpers";
 import { type PlanInterface, hasPlansEditAccess } from "../../helpers";
@@ -54,7 +54,7 @@ export const PlanList = memo((props: Props) => {
     return ArrayHelper.getAll(plansQuery.data || [], "ministryId", props.ministry.id);
   }, [plansQuery.data, props.ministry.id, props.planTypeId]);
 
-  const plans = React.useMemo(() => {
+  const upcomingPlans = React.useMemo(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const isUpcoming = (p: PlanInterface) => {
@@ -63,13 +63,13 @@ export const PlanList = memo((props: Props) => {
       d.setHours(0, 0, 0, 0);
       return d >= today;
     };
-    // Past keeps the API order (newest first).
-    if (showPast) return allPlans.filter(p => !isUpcoming(p));
-    const upcoming = allPlans.filter(isUpcoming);
     // The API returns newest first; upcoming weeks read soonest first, undated plans last.
     const time = (p: PlanInterface) => p.serviceDate ? DateHelper.toDate(p.serviceDate).getTime() : Number.MAX_SAFE_INTEGER;
-    return [...upcoming].sort((a, b) => time(a) - time(b));
-  }, [allPlans, showPast]);
+    return allPlans.filter(isUpcoming).sort((a, b) => time(a) - time(b));
+  }, [allPlans]);
+
+  // Past keeps the API order (newest first).
+  const plans = React.useMemo(() => (showPast ? allPlans.filter((p) => !upcomingPlans.includes(p)) : upcomingPlans), [allPlans, upcomingPlans, showPast]);
 
   const addPlan = useCallback(() => {
     const lastSunday = DateHelper.getLastSunday();
@@ -235,6 +235,12 @@ export const PlanList = memo((props: Props) => {
                     <Link component={RouterLink} to={`/serving/plans/${p.id}`} underline="hover" sx={{ fontWeight: 600 }}>
                       {p.name}
                     </Link>
+                    {p.lessonTrimWarning && (
+                      <Box sx={{ display: "flex", alignItems: "flex-start", gap: 0.5, mt: 0.5, color: "warning.dark" }} data-testid="plan-lesson-trim-warning">
+                        <WarningIcon aria-label={Locale.label("plans.planList.lessonTrimWarning")} sx={{ fontSize: 16, mt: "2px" }} />
+                        <Typography variant="body2">{p.lessonTrimWarning}</Typography>
+                      </Box>
+                    )}
                   </TableCell>
                   <TableCell sx={{ fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{p.serviceDate ? DateHelper.prettyDate(DateHelper.toDate(p.serviceDate)) : ""}</TableCell>
                   <TableCell sx={{ color: "text.secondary" }}>{p.serviceOrder ? Locale.label("common.yes", "Yes") : Locale.label("common.no", "No")}</TableCell>
@@ -253,7 +259,7 @@ export const PlanList = memo((props: Props) => {
       {lessonMenu}
 
       {showTemplates && canEdit && (
-        <PlanTemplateManager ministryId={props.ministry.id || ""} plans={plans} onClose={() => setShowTemplates(false)} />
+        <PlanTemplateManager ministryId={props.ministry.id || ""} plans={allPlans} upcomingPlans={upcomingPlans} onClose={() => setShowTemplates(false)} />
       )}
     </Surface>
   );

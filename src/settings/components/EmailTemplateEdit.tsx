@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { flushSync } from "react-dom";
 import { useForm, Controller, useFormState } from "react-hook-form";
 import { TextField, FormControl, Grid, InputLabel, MenuItem, Select, Box, Chip, Stack, Typography, Dialog, DialogTitle, DialogContent, DialogActions, Button } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material";
@@ -15,10 +16,24 @@ const getMergeFields = () => [
   { key: "{{lastName}}", label: Locale.label("settings.emailTemplateEdit.mergeLastName") },
   { key: "{{displayName}}", label: Locale.label("settings.emailTemplateEdit.mergeDisplayName") },
   { key: "{{email}}", label: Locale.label("settings.emailTemplateEdit.mergeEmail") },
-  { key: "{{churchName}}", label: Locale.label("settings.emailTemplateEdit.mergeChurchName") }
+  { key: "{{churchName}}", label: Locale.label("settings.emailTemplateEdit.mergeChurchName") },
+  { key: "{{amount}}", label: Locale.label("settings.emailTemplateEdit.mergeAmount") },
+  { key: "{{giftDate}}", label: Locale.label("settings.emailTemplateEdit.mergeGiftDate") },
+  { key: "{{fund}}", label: Locale.label("settings.emailTemplateEdit.mergeFund") },
+  { key: "{{receipt}}", label: Locale.label("settings.emailTemplateEdit.mergeReceipt") }
 ];
 
-const CATEGORIES = ["General", "Events", "Groups", "Giving", "Welcome"];
+// Sample gift for the preview; the real values come from the donation that started the workflow.
+const SAMPLE_RECEIPT = "<table role=\"presentation\" cellspacing=\"8\"><tr><th>Fund</th><th>Amount</th></tr><tr><td>General Fund</td><td>$40.00</td></tr><tr><td>Missions</td><td>$10.00</td></tr><tr><th>Total</th><td>$50.00</td></tr></table>";
+const fillSampleGift = (text: string, receipt: string) => text
+  .replace(/\{\{amount\}\}/g, () => "$50.00")
+  .replace(/\{\{giftDate\}\}/g, new Date().toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }))
+  .replace(/\{\{fund\}\}/g, "General Fund")
+  .replace(/\{\{receipt\}\}/g, () => receipt);
+
+const TEXT_CATEGORY = "Text";
+const CATEGORIES = ["General", "Events", "Groups", "Giving", "Welcome", TEXT_CATEGORY];
+const TEXT_MAX_LENGTH = 1600;
 const BODY_MERGE_TARGET_SELECTOR = "p, div, li, h1, h2, h3, h4, h5, h6, blockquote, td, th";
 
 const appendMergeFieldToHtml = (html: string, field: string) => {
@@ -63,8 +78,9 @@ export const EmailTemplateEdit: React.FC<Props> = ({ template, onSave, onCancel,
   const [showPreview, setShowPreview] = useState(false);
   const [bodyEditorKey, setBodyEditorKey] = useState(0);
   const subjectInputRef = React.useRef<HTMLInputElement | null>(null);
+  const textInputRef = React.useRef<HTMLTextAreaElement | null>(null);
 
-  const { control, register, handleSubmit, getValues, setValue } = useForm<AnyRecord>({
+  const { control, register, handleSubmit, getValues, setValue, watch } = useForm<AnyRecord>({
     defaultValues: {
       name: template.name || "",
       subject: template.subject || "",
@@ -74,6 +90,7 @@ export const EmailTemplateEdit: React.FC<Props> = ({ template, onSave, onCancel,
   });
 
   const { errors } = useFormState({ control });
+  const isText = watch("category") === TEXT_CATEGORY;
   const e = errors as any;
 
   const summaryErrors = React.useMemo(() => {
@@ -88,7 +105,7 @@ export const EmailTemplateEdit: React.FC<Props> = ({ template, onSave, onCancel,
     const t: EmailTemplateInterface = {
       ...template,
       name: values.name,
-      subject: values.subject,
+      subject: values.category === TEXT_CATEGORY ? "" : values.subject,
       htmlContent: values.htmlContent,
       category: values.category,
       churchId: UserHelper.currentUserChurch.church.id
@@ -104,11 +121,10 @@ export const EmailTemplateEdit: React.FC<Props> = ({ template, onSave, onCancel,
     const end = input?.selectionEnd ?? current.length;
     const nextSubject = current.slice(0, start) + field + current.slice(end);
     const caret = start + field.length;
-    setValue("subject", nextSubject, { shouldDirty: true, shouldValidate: true, shouldTouch: true });
-    requestAnimationFrame(() => {
-      subjectInputRef.current?.focus();
-      subjectInputRef.current?.setSelectionRange(caret, caret);
-    });
+    // Commit now and place the caret in the same tick; a deferred caret lands after the next keystroke.
+    flushSync(() => setValue("subject", nextSubject, { shouldDirty: true, shouldValidate: true, shouldTouch: true }));
+    subjectInputRef.current?.focus();
+    subjectInputRef.current?.setSelectionRange(caret, caret);
   };
 
   const insertMergeFieldInBody = (field: string) => {
@@ -116,6 +132,20 @@ export const EmailTemplateEdit: React.FC<Props> = ({ template, onSave, onCancel,
     const nextHtml = appendMergeFieldToHtml(getValues("htmlContent") || "", field);
     setValue("htmlContent", nextHtml, { shouldDirty: true, shouldValidate: true });
     setBodyEditorKey(key => key + 1);
+  };
+
+  // Text templates are plain text, so chips insert at the caret like the Send Text window does.
+  const insertMergeFieldInText = (field: string) => {
+    const current = getValues("htmlContent") || "";
+    const input = textInputRef.current;
+    const start = input?.selectionStart ?? current.length;
+    const end = input?.selectionEnd ?? current.length;
+    const next = current.slice(0, start) + field + current.slice(end);
+    if (next.length > TEXT_MAX_LENGTH) return;
+    const caret = start + field.length;
+    flushSync(() => setValue("htmlContent", next, { shouldDirty: true, shouldValidate: true }));
+    textInputRef.current?.focus();
+    textInputRef.current?.setSelectionRange(caret, caret);
   };
 
   const getPreviewHtml = () => {
@@ -126,6 +156,7 @@ export const EmailTemplateEdit: React.FC<Props> = ({ template, onSave, onCancel,
     preview = preview.replace(/\{\{displayName\}\}/g, "John Smith");
     preview = preview.replace(/\{\{email\}\}/g, "john@example.com");
     preview = preview.replace(/\{\{churchName\}\}/g, churchName);
+    preview = fillSampleGift(preview, SAMPLE_RECEIPT);
 
     const isDarkTheme = document.body.classList.contains("dark-theme");
     const styleInjection = isDarkTheme ? "<style>body { color: white; font-family: sans-serif; }</style>" : "<style>body { font-family: sans-serif; }</style>";
@@ -141,7 +172,7 @@ export const EmailTemplateEdit: React.FC<Props> = ({ template, onSave, onCancel,
     preview = preview.replace(/\{\{displayName\}\}/g, "John Smith");
     preview = preview.replace(/\{\{email\}\}/g, "john@example.com");
     preview = preview.replace(/\{\{churchName\}\}/g, churchName);
-    return preview;
+    return fillSampleGift(preview, "");
   };
 
   return (
@@ -164,87 +195,121 @@ export const EmailTemplateEdit: React.FC<Props> = ({ template, onSave, onCancel,
           </Grid>
         </Grid>
 
-        <Box sx={{ mt: 2 }}>
-          <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: "block" }}>{Locale.label("settings.emailTemplateEdit.insertMergeSubject")}</Typography>
-          <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mb: 1 }}>
-            {getMergeFields().map(f => (
-              <Chip key={f.key} label={f.label} size="small" variant="outlined" onMouseDown={keepFocus} onClick={() => insertMergeField(f.key)} sx={{ cursor: "pointer" }} />
-            ))}
-          </Stack>
-        </Box>
+        {isText ? (
+          <>
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: "block" }}>{Locale.label("settings.emailTemplateEdit.insertMergeBody")}</Typography>
+              <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mb: 1 }}>
+                {getMergeFields().filter(f => f.key !== "{{email}}").map(f => (
+                  <Chip key={f.key} label={f.label} size="small" variant="outlined" onMouseDown={keepFocus} onClick={() => insertMergeFieldInText(f.key)} sx={{ cursor: "pointer" }} />
+                ))}
+              </Stack>
+            </Box>
+            <Controller name="htmlContent" control={control} rules={{ required: Locale.label("settings.emailTemplateEdit.bodyRequired") }} render={({ field }) => (
+              <TextField
+                fullWidth
+                multiline
+                minRows={4}
+                label={Locale.label("settings.emailTemplateEdit.textBody")}
+                error={!!e.htmlContent}
+                name={field.name}
+                value={field.value || ""}
+                onChange={field.onChange}
+                onBlur={field.onBlur}
+                inputProps={{ maxLength: TEXT_MAX_LENGTH }}
+                inputRef={(element) => {
+                  field.ref(element);
+                  textInputRef.current = element;
+                }}
+              />
+            )} />
+          </>
+        ) : (
+          <>
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: "block" }}>{Locale.label("settings.emailTemplateEdit.insertMergeSubject")}</Typography>
+              <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mb: 1 }}>
+                {getMergeFields().filter(f => f.key !== "{{receipt}}").map(f => (
+                  <Chip key={f.key} label={f.label} size="small" variant="outlined" onMouseDown={keepFocus} onClick={() => insertMergeField(f.key)} sx={{ cursor: "pointer" }} />
+                ))}
+              </Stack>
+            </Box>
 
-        <Controller name="subject" control={control} rules={{ required: Locale.label("settings.emailTemplateEdit.subjectRequired") }} render={({ field }) => (
-          <TextField
-            fullWidth
-            label={Locale.label("settings.emailTemplateEdit.subject")}
-            placeholder={Locale.label("settings.emailTemplateEdit.subjectPlaceholder")}
-            error={!!e.subject}
-            helperText={e.subject?.message}
-            name={field.name}
-            value={field.value || ""}
-            onChange={field.onChange}
-            onBlur={field.onBlur}
-            inputRef={(element) => {
-              field.ref(element);
-              subjectInputRef.current = element;
-            }}
-          />
-        )} />
+            <Controller name="subject" control={control} rules={{ validate: (v) => getValues("category") === TEXT_CATEGORY || !!v || Locale.label("settings.emailTemplateEdit.subjectRequired") }} render={({ field }) => (
+              <TextField
+                fullWidth
+                label={Locale.label("settings.emailTemplateEdit.subject")}
+                placeholder={Locale.label("settings.emailTemplateEdit.subjectPlaceholder")}
+                error={!!e.subject}
+                helperText={e.subject?.message}
+                name={field.name}
+                value={field.value || ""}
+                onChange={field.onChange}
+                onBlur={field.onBlur}
+                inputRef={(element) => {
+                  field.ref(element);
+                  subjectInputRef.current = element;
+                }}
+              />
+            )} />
 
-        <Box sx={{ mt: 2 }}>
-          <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: "block" }}>{Locale.label("settings.emailTemplateEdit.insertMergeBody")}</Typography>
-          <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mb: 1 }}>
-            {getMergeFields().map(f => (
-              <Chip key={f.key} label={f.label} size="small" variant="outlined" onMouseDown={keepFocus} onClick={() => insertMergeFieldInBody(f.key)} sx={{ cursor: "pointer" }} />
-            ))}
-          </Stack>
-        </Box>
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: "block" }}>{Locale.label("settings.emailTemplateEdit.insertMergeBody")}</Typography>
+              <Stack direction="row" spacing={0.5} flexWrap="wrap" sx={{ mb: 1 }}>
+                {getMergeFields().map(f => (
+                  <Chip key={f.key} label={f.label} size="small" variant="outlined" onMouseDown={keepFocus} onClick={() => insertMergeFieldInBody(f.key)} sx={{ cursor: "pointer" }} />
+                ))}
+              </Stack>
+              <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: "block" }} data-testid="gift-merge-hint">{Locale.label("settings.emailTemplateEdit.giftMergeHint")}</Typography>
+            </Box>
 
-        <Box sx={{
-          mt: 1,
-          border: "1px solid",
-          borderColor: "divider",
-          borderRadius: "var(--b1-radius-control)",
-          p: 1,
-          overflow: "hidden",
-          "& .editor-container": { overflow: "hidden" },
-          "& .editor-inner": {
-            height: 200,
-            minHeight: 200,
-            overflow: "hidden"
-          },
-          "& .editor-scroller": {
-            height: 200,
-            minHeight: 200,
-            maxHeight: 200,
-            overflowY: "auto"
-          },
-          "& .editor-input": {
-            boxSizing: "border-box",
-            minHeight: 200
-          },
-          "& .editor-inner > .MuiBox-root": { overflow: "hidden" },
-          "& .editor-inner .MuiTextField-root": { height: "100%" },
-          "& .editor-inner .MuiInputBase-root": {
-            boxSizing: "border-box",
-            height: "100%",
-            overflow: "hidden"
-          },
-          "& .editor-inner textarea.MuiInputBase-input": {
-            boxSizing: "border-box",
-            height: "100% !important",
-            minHeight: "0 !important",
-            overflow: "auto"
-          }
-        }}>
-          <Controller name="htmlContent" control={control} rules={{ required: Locale.label("settings.emailTemplateEdit.bodyRequired") }} render={({ field }) => (
-            <HtmlEditor key={bodyEditorKey} value={field.value || ""} onChange={(val) => field.onChange(val)} style={{ minHeight: 200 }} placeholder={Locale.label("settings.emailTemplateEdit.composePlaceholder")} />
-          )} />
-        </Box>
+            <Box sx={{
+              mt: 1,
+              border: "1px solid",
+              borderColor: "divider",
+              borderRadius: "var(--b1-radius-control)",
+              p: 1,
+              overflow: "hidden",
+              "& .editor-container": { overflow: "hidden" },
+              "& .editor-inner": {
+                height: 200,
+                minHeight: 200,
+                overflow: "hidden"
+              },
+              "& .editor-scroller": {
+                height: 200,
+                minHeight: 200,
+                maxHeight: 200,
+                overflowY: "auto"
+              },
+              "& .editor-input": {
+                boxSizing: "border-box",
+                minHeight: 200
+              },
+              "& .editor-inner > .MuiBox-root": { overflow: "hidden" },
+              "& .editor-inner .MuiTextField-root": { height: "100%" },
+              "& .editor-inner .MuiInputBase-root": {
+                boxSizing: "border-box",
+                height: "100%",
+                overflow: "hidden"
+              },
+              "& .editor-inner textarea.MuiInputBase-input": {
+                boxSizing: "border-box",
+                height: "100% !important",
+                minHeight: "0 !important",
+                overflow: "auto"
+              }
+            }}>
+              <Controller name="htmlContent" control={control} rules={{ required: Locale.label("settings.emailTemplateEdit.bodyRequired") }} render={({ field }) => (
+                <HtmlEditor key={bodyEditorKey} value={field.value || ""} onChange={(val) => field.onChange(val)} style={{ minHeight: 200 }} placeholder={Locale.label("settings.emailTemplateEdit.composePlaceholder")} />
+              )} />
+            </Box>
 
-        <Box sx={{ mt: 2, textAlign: "right" }}>
-          <Button variant="outlined" size="small" onClick={() => setShowPreview(true)}>{Locale.label("settings.emailTemplateEdit.preview")}</Button>
-        </Box>
+            <Box sx={{ mt: 2, textAlign: "right" }}>
+              <Button variant="outlined" size="small" onClick={() => setShowPreview(true)}>{Locale.label("settings.emailTemplateEdit.preview")}</Button>
+            </Box>
+          </>
+        )}
       </FormCard>
 
       <Dialog open={showPreview} onClose={() => setShowPreview(false)} maxWidth="md" fullWidth>

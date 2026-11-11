@@ -13,9 +13,8 @@ export { Question } from "./Question";
 export { PrintStyles } from "./PrintStyles";
 export { PrintLightTheme } from "./PrintLightTheme";
 export { Search } from "./Search";
-export { StateOptions } from "./StateOptions";
 export { Wrapper } from "./Wrapper";
-export { PermissionDenied, hasPermission } from "./PermissionDenied";
+export { PermissionDenied } from "./PermissionDenied";
 export { DocChatWidget } from "./docChat";
 
 // Person Management Components (moved from AppHelper)

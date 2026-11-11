@@ -14,7 +14,7 @@ import { Household } from "./Household";
 import { PickupPeople } from "./PickupPeople";
 import { formattedPhoneNumber } from "./PersonEdit";
 import { downloadPersonData } from "./personDataExport";
-import { Pill, RecordActions, TextAction, srOnlySx } from "../../components/ui";
+import { Pill, RecordActions, StatusChip, TextAction, srOnlySx } from "../../components/ui";
 
 interface Props {
   person: PersonInterface;
@@ -28,7 +28,6 @@ interface Props {
   onPhoto: () => void;
 }
 
-const memberTone = (status?: string) => (["member", "active", "staff"].includes((status || "").toLowerCase()) ? "primary" : "neutral");
 
 export const PersonIdentity: React.FC<Props> = (props) => {
   const { person } = props;
@@ -52,6 +51,13 @@ export const PersonIdentity: React.FC<Props> = (props) => {
     ApiHelper.get("/userchurch/personid/" + person.id, "MembershipApi")
       .then((data: { email: string } | null) => setUserEmail(data?.email || ""))
       .catch(() => setUserEmail(""));
+  }, [person]);
+
+  // Custom field values are saved separately from the person record, so a save that leaves the person
+  // unchanged hands back the same object. Reload them when the edit form closes as well.
+  const isEditing = props.view === "edit";
+  React.useEffect(() => {
+    if (!person.id || isEditing) return;
     ApiHelper.get(`/personfieldvalues/person/${person.id}`, "MembershipApi")
       .then((data: PersonFieldValueInterface[]) => {
         const map: Record<string, string> = {};
@@ -59,7 +65,7 @@ export const PersonIdentity: React.FC<Props> = (props) => {
         setCustomValues(map);
       })
       .catch(() => setCustomValues({}));
-  }, [person]);
+  }, [person, isEditing]);
 
   React.useEffect(() => {
     ApiHelper.get("/personfields", "MembershipApi")
@@ -138,7 +144,7 @@ export const PersonIdentity: React.FC<Props> = (props) => {
 
       {(person.membershipStatus || userEmail || person.nametagNotes || person.optedOut || flagFields.length > 0) && (
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
-          {person.membershipStatus && <Pill tone={memberTone(person.membershipStatus)}>{person.membershipStatus}</Pill>}
+          {person.membershipStatus && <StatusChip status={person.membershipStatus} />}
           {flagFields.map((x) => {
             const yes = customValues[x.f.id || ""] === "True";
             return (
@@ -186,6 +192,12 @@ export const PersonIdentity: React.FC<Props> = (props) => {
             <Typography key={x.f.id || x.f.name} sx={quiet}>{x.f.name}: <Box component="span" sx={strong}>{x.text}</Box></Typography>
           ))}
         </Stack>
+      )}
+
+      {(person as any).dateAdded && (
+        <Typography sx={{ ...quiet, mt: 2 }} data-testid="person-date-added">
+          {Locale.label("people.personView.dateAdded").replace("{date}", DateHelper.prettyDate(new Date((person as any).dateAdded)))}
+        </Typography>
       )}
 
       <Box sx={{ mt: 3 }}>

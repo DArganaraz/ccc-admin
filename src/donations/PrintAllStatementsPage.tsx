@@ -8,6 +8,7 @@ import { Box, CircularProgress, Typography } from "@mui/material";
 import { type PledgeProgressRowInterface } from "../helpers";
 import { GivingStatementDocument, parseStatementSettings } from "./components/GivingStatementDocument";
 import { usePrintLogo } from "../components/PrintChurchHeader";
+import { statementDonations } from "./statementDonations";
 
 export const PrintAllStatementsPage = () => {
   const [searchParams] = useSearchParams();
@@ -16,13 +17,15 @@ export const PrintAllStatementsPage = () => {
   const context = useContext(UserContext);
   const [currency, setCurrency] = useState<string>("usd");
 
+  // One year only: a church's full giving history can be too large for one response.
+  const yearRange = `startDate=${currYear}-01-01&endDate=${currYear}-12-31`;
   const allDonations = useQuery<DonationInterface[]>({
-    queryKey: ["/donations", "GivingApi"],
+    queryKey: ["/donations?" + yearRange, "GivingApi"],
     placeholderData: []
   });
 
   const allFundDonations = useQuery<FundDonationInterface[]>({
-    queryKey: ["/fundDonations", "GivingApi"],
+    queryKey: ["/fundDonations?" + yearRange, "GivingApi"],
     placeholderData: []
   });
 
@@ -43,14 +46,13 @@ export const PrintAllStatementsPage = () => {
   });
 
   const yearDonations = useMemo(() => {
-    return (
-      allDonations.data?.filter((don) => {
-        if (!don.donationDate) return false;
-        const donationDate = new Date(don.donationDate.toString().split("T")[0] + "T00:00:00");
-        return donationDate.getFullYear() === currYear;
-      }) || []
-    );
-  }, [allDonations.data, currYear]);
+    const inYear = allDonations.data?.filter((don) => {
+      if (!don.donationDate) return false;
+      const donationDate = new Date(don.donationDate.toString().split("T")[0] + "T00:00:00");
+      return donationDate.getFullYear() === currYear;
+    }) || [];
+    return statementDonations(inYear, allFundDonations.data || [], funds.data || []);
+  }, [allDonations.data, allFundDonations.data, funds.data, currYear]);
 
   const personIds = useMemo(() => {
     const ids = new Set<string>();
@@ -67,8 +69,8 @@ export const PrintAllStatementsPage = () => {
     queryFn: async () => {
       const chunks: string[][] = [];
       for (let i = 0; i < personIds.length; i += 200) chunks.push(personIds.slice(i, i + 200));
-      const results = await Promise.all(chunks.map((ids) => ApiHelper.get("/people/ids?ids=" + ids.join(","), "MembershipApi")));
-      return results.flat();
+      const results: PersonInterface[][] = await Promise.all(chunks.map((ids) => ApiHelper.get("/people/ids?ids=" + ids.join(","), "MembershipApi")));
+      return results.flat().sort((a, b) => (a.name?.last || "").localeCompare(b.name?.last || "") || (a.name?.first || "").localeCompare(b.name?.first || ""));
     },
     placeholderData: [],
     enabled: personIds.length > 0

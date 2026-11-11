@@ -1,6 +1,6 @@
 import React from "react";
 import { useForm, Controller, useFormState } from "react-hook-form";
-import { Checkbox, FormControl, FormControlLabel, Grid, InputLabel, MenuItem, Select, TextField } from "@mui/material";
+import { Checkbox, FormControl, FormControlLabel, Grid, InputLabel, MenuItem, Select, TextField, FormHelperText } from "@mui/material";
 import { LocalizationProvider, DatePicker } from "@mui/x-date-pickers";
 import { AdapterDayjs } from "@mui/x-date-pickers/AdapterDayjs";
 import dayjs from "dayjs";
@@ -11,6 +11,7 @@ import { CampusSelect } from "../../components/CampusSelect";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { queryClient } from "../../queryClient";
 import { useConfirmDelete, useFirstDayOfWeek, applyWeekStart } from "../../hooks";
+import { getPlanRepeatDates, type PlanRepeatFrequency, type PlanRepeatMonthMode } from "./planRepeatDates";
 
 interface Props {
   plan: PlanInterface;
@@ -20,11 +21,19 @@ interface Props {
 
 type AnyRecord = Record<string, any>;
 
+const MAX_REPEAT_INTERVAL = 52;
+const MAX_REPEAT_COUNT = 12;
+
+const clampRepeat = (value: string, max: number) => Math.min(max, Math.max(1, parseInt(value) || 1));
+
 export const PlanEdit = (props: Props) => {
   const [copyMode, setCopyMode] = React.useState<string>("all");
   const [copyServiceOrder, setCopyServiceOrder] = React.useState<boolean>(false);
   const [templateId, setTemplateId] = React.useState<string>("");
-  const [repeatWeeks, setRepeatWeeks] = React.useState<string>("1");
+  const [repeatInterval, setRepeatInterval] = React.useState<string>("1");
+  const [repeatFrequency, setRepeatFrequency] = React.useState<PlanRepeatFrequency>("week");
+  const [repeatMonthMode, setRepeatMonthMode] = React.useState<PlanRepeatMonthMode>("monthDay");
+  const [repeatCount, setRepeatCount] = React.useState<string>("1");
   const { confirm, ConfirmDialogElement } = useConfirmDelete();
 
   const firstDayOfWeek = useFirstDayOfWeek();
@@ -36,6 +45,11 @@ export const PlanEdit = (props: Props) => {
     placeholderData: []
   });
   const templates = templatesQuery.data || [];
+  const confirmationWorkflows = useQuery<{ id: string; name: string }[]>({
+    queryKey: [`/plans/confirmationWorkflows?ministryId=${props.plan?.ministryId || ""}`, "DoingApi"],
+    enabled: !!props.plan?.ministryId,
+    placeholderData: []
+  });
 
   const { control, register, handleSubmit, watch, setValue, getFieldState } = useForm<AnyRecord>({
     defaultValues: {
@@ -45,7 +59,8 @@ export const PlanEdit = (props: Props) => {
       signupDeadlineHours: props.plan?.signupDeadlineHours ?? "",
       showVolunteerNames: props.plan?.showVolunteerNames !== false,
       prepared: props.plan?.prepared === true,
-      autoReplaceOnDecline: props.plan?.autoReplaceOnDecline === true
+      autoReplaceOnDecline: props.plan?.autoReplaceOnDecline === true,
+      confirmationWorkflowId: props.plan?.confirmationWorkflowId || ""
     }
   });
 
@@ -85,14 +100,21 @@ export const PlanEdit = (props: Props) => {
 
   const isCopying = !templateId && !!previousPlan && (copyMode !== "none" || copyServiceOrder);
 
-  // Each extra week is copied from the plan created the week before, like BulkLessonSchedule.
-  const copyForwardWeeks = async (plan: PlanInterface, firstId: string) => {
-    const weeks = Math.min(12, Math.max(1, parseInt(repeatWeeks) || 1));
+  const getRepeatDates = (first: Date) => getPlanRepeatDates(first, {
+    interval: clampRepeat(repeatInterval, MAX_REPEAT_INTERVAL),
+    frequency: repeatFrequency,
+    monthMode: repeatMonthMode,
+    count: clampRepeat(repeatCount, MAX_REPEAT_COUNT)
+  });
+
+  // Each extra plan is copied from the plan created before it, like BulkLessonSchedule.
+  const copyForwardPlans = async (plan: PlanInterface, firstId: string) => {
     const firstDate = new Date(plan.serviceDate!);
     const autoName = plan.name === DateHelper.prettyDate(firstDate);
+    const dates = getRepeatDates(firstDate);
     let sourceId = firstId;
-    for (let i = 1; i < weeks && sourceId; i++) {
-      const serviceDate = new Date(firstDate.getFullYear(), firstDate.getMonth(), firstDate.getDate() + 7 * i, 12, 0, 0);
+    for (let i = 1; i < dates.length && sourceId; i++) {
+      const serviceDate = dates[i];
       const name = autoName ? DateHelper.prettyDate(serviceDate) : plan.name;
       try {
         const copied = await ApiHelper.post("/plans/copy/" + sourceId, { ...plan, name, serviceDate, copyMode, copyServiceOrder }, "DoingApi");
@@ -103,6 +125,29 @@ export const PlanEdit = (props: Props) => {
       }
     }
   };
+
+  // Parsed with toDate because new Date() reads a date-only string as UTC, landing on the day before in US time zones.
+  const repeatFirstDate = watchedDate ? DateHelper.toDate(watchedDate) : null;
+
+  const monthModeLabels = React.useMemo(() => {
+    if (!repeatFirstDate) return null;
+    const day = repeatFirstDate.getDate();
+    const ordinals = ["first", "second", "third", "fourth", "last"];
+    const days = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+    return {
+      monthDay: Locale.label("eventCalendar.recurring.monthlyOnDay").replace("{}", day.toString()),
+      nthWeekday: Locale.label("eventCalendar.recurring.monthlyOnNth")
+        .replace("{ordinal}", Locale.label("eventCalendar.recurring.ordinal." + ordinals[Math.floor((day - 1) / 7)]))
+        .replace("{day}", Locale.label("eventCalendar.recurring.day." + days[repeatFirstDate.getDay()]))
+    };
+  }, [watchedDate]);
+
+  const repeatHelper = (() => {
+    const helper = Locale.label("plans.planEdit.repeatHelper");
+    if (!repeatFirstDate || !isCopying || clampRepeat(repeatCount, MAX_REPEAT_COUNT) === 1) return helper;
+    const dates = getRepeatDates(repeatFirstDate).map(d => dayjs(d).format("MMM D")).join(", ");
+    return `${dates}. ${helper}.`;
+  })();
 
   const savePlanMutation = useMutation({
     mutationFn: async (plan: PlanInterface) => {
@@ -118,7 +163,7 @@ export const PlanEdit = (props: Props) => {
         return ApiHelper.post("/plans", [plan], "DoingApi");
       } else {
         const first = await ApiHelper.post("/plans/copy/" + previousPlan!.id, { ...plan, copyMode, copyServiceOrder }, "DoingApi");
-        if (first?.id) await copyForwardWeeks(plan, first.id);
+        if (first?.id) await copyForwardPlans(plan, first.id);
         return first;
       }
     },
@@ -147,9 +192,12 @@ export const PlanEdit = (props: Props) => {
       signupDeadlineHours: values.signupDeadlineHours ? parseInt(values.signupDeadlineHours) : undefined,
       showVolunteerNames: values.showVolunteerNames,
       prepared: values.prepared,
-      autoReplaceOnDecline: values.autoReplaceOnDecline
+      autoReplaceOnDecline: values.autoReplaceOnDecline,
+      confirmationWorkflowId: values.confirmationWorkflowId || null
     };
     plan.campusId = values.campusId || null;
+    // undefined is dropped from the JSON body, so the API would keep the old deadline; null clears it
+    if (!values.signupDeadlineHours) plan.signupDeadlineHours = null as any;
     if (savePlanMutation.isPending) return;
     savePlanMutation.mutate(plan);
   };
@@ -210,7 +258,33 @@ export const PlanEdit = (props: Props) => {
               </Select>
             </FormControl>
             <FormControlLabel control={<Checkbox checked={copyServiceOrder} onChange={(e) => setCopyServiceOrder(e.target.checked)} />} label={Locale.label("plans.planEdit.copyServiceOrder") || "Copy Order of Service"} />
-            <TextField fullWidth label={Locale.label("plans.planEdit.repeatWeekly")} type="number" value={repeatWeeks} disabled={!isCopying} onChange={(e) => setRepeatWeeks(e.target.value)} onBlur={() => setRepeatWeeks(String(Math.min(12, Math.max(1, parseInt(repeatWeeks) || 1))))} helperText={Locale.label("plans.planEdit.repeatWeeklyHelper")} slotProps={{ htmlInput: { min: 1, max: 12 } }} data-testid="repeat-weeks-input" />
+            <Grid container spacing={2}>
+              <Grid size={{ xs: 12, sm: repeatFrequency === "month" ? 3 : 6 }}>
+                <TextField fullWidth label={Locale.label("plans.planEdit.repeatEvery")} type="number" value={repeatInterval} disabled={!isCopying} onChange={(e) => setRepeatInterval(e.target.value)} onBlur={() => setRepeatInterval(String(clampRepeat(repeatInterval, MAX_REPEAT_INTERVAL)))} slotProps={{ htmlInput: { min: 1, max: MAX_REPEAT_INTERVAL } }} data-testid="repeat-interval-input" />
+              </Grid>
+              <Grid size={{ xs: 12, sm: repeatFrequency === "month" ? 3 : 6 }}>
+                <FormControl fullWidth disabled={!isCopying}>
+                  <InputLabel id="repeatFrequency">{Locale.label("plans.planEdit.repeatFrequency")}</InputLabel>
+                  <Select labelId="repeatFrequency" label={Locale.label("plans.planEdit.repeatFrequency")} value={repeatFrequency} onChange={(e) => setRepeatFrequency(e.target.value as PlanRepeatFrequency)} data-testid="repeat-frequency-select">
+                    <MenuItem value="day">{Locale.label("plans.planEdit.repeatDay")}</MenuItem>
+                    <MenuItem value="week">{Locale.label("plans.planEdit.repeatWeek")}</MenuItem>
+                    <MenuItem value="month">{Locale.label("plans.planEdit.repeatMonth")}</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+              {repeatFrequency === "month" && monthModeLabels && (
+                <Grid size={{ xs: 12, sm: 6 }}>
+                  <FormControl fullWidth disabled={!isCopying}>
+                    <InputLabel id="repeatMonthMode">{Locale.label("plans.planEdit.repeatOn")}</InputLabel>
+                    <Select labelId="repeatMonthMode" label={Locale.label("plans.planEdit.repeatOn")} value={repeatMonthMode} onChange={(e) => setRepeatMonthMode(e.target.value as PlanRepeatMonthMode)} data-testid="repeat-month-mode-select">
+                      <MenuItem value="monthDay">{monthModeLabels.monthDay}</MenuItem>
+                      <MenuItem value="nthWeekday">{monthModeLabels.nthWeekday}</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Grid>
+              )}
+            </Grid>
+            <TextField fullWidth label={Locale.label("plans.planEdit.repeatCount")} type="number" value={repeatCount} disabled={!isCopying} onChange={(e) => setRepeatCount(e.target.value)} onBlur={() => setRepeatCount(String(clampRepeat(repeatCount, MAX_REPEAT_COUNT)))} helperText={repeatHelper} slotProps={{ htmlInput: { min: 1, max: MAX_REPEAT_COUNT } }} data-testid="repeat-count-input" />
           </>
         )}
         <TextField fullWidth label={Locale.label("plans.planEdit.signupDeadline")} id="signupDeadlineHours" type="number" helperText={Locale.label("plans.planEdit.signupDeadlineHelper")} slotProps={{ inputLabel: { shrink: true } }} {...register("signupDeadlineHours")} />
@@ -218,6 +292,17 @@ export const PlanEdit = (props: Props) => {
           <>
             <Controller name="showVolunteerNames" control={control} render={({ field }) => (
               <FormControlLabel control={<Checkbox checked={field.value ?? true} onChange={(ev) => field.onChange(ev.target.checked)} />} label={Locale.label("plans.planEdit.showVolunteerNames")} />
+            )} />
+            <Controller name="confirmationWorkflowId" control={control} render={({ field }) => (
+              <FormControl fullWidth sx={{ mb: 2 }}>
+                <InputLabel>{Locale.label("plans.confirmation.workflow", "Confirmation workflow")}</InputLabel>
+                <Select {...field} label={Locale.label("plans.confirmation.workflow", "Confirmation workflow")} data-testid="plan-confirmation-workflow">
+                  <MenuItem value="">{Locale.label("plans.confirmation.none", "Use existing assignment notifications")}</MenuItem>
+                  {(confirmationWorkflows.data || []).map((w) => <MenuItem key={w.id} value={w.id}>{w.name}</MenuItem>)}
+                  {props.plan?.confirmationWorkflowId && !(confirmationWorkflows.data || []).some((w) => w.id === props.plan.confirmationWorkflowId) && <MenuItem value={props.plan.confirmationWorkflowId}>{Locale.label("plans.confirmation.unavailable", "Selected workflow is unavailable")}</MenuItem>}
+                </Select>
+                <FormHelperText>{Locale.label("plans.confirmation.help", "Create a Serving Assignment Confirmation workflow under Serving → Workflows, then select it here. Publishing and notifying starts one card per new request. Accepted requests receive service reminders; unanswered requests use this workflow.")}</FormHelperText>
+              </FormControl>
             )} />
             <Controller name="prepared" control={control} render={({ field }) => (
               <FormControlLabel control={<Checkbox checked={field.value ?? false} onChange={(ev) => field.onChange(ev.target.checked)} data-testid="prepared-checkbox" />} label={Locale.label("plans.planEdit.prepared") || "Penciled in (hide assignments from volunteers until published)"} />

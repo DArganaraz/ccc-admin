@@ -1,4 +1,4 @@
-import { FormControl, InputLabel, MenuItem, Select, TextField, Box, Typography, Button, type SelectChangeEvent } from "@mui/material";
+import { FormControl, InputAdornment, InputLabel, MenuItem, Select, TextField, Box, Typography, Button, type SelectChangeEvent } from "@mui/material";
 import React, { memo, useCallback, useRef, useEffect } from "react";
 import { PersonAdd } from "../../components";
 import { ApiHelper, DateHelper, ErrorMessages, PersonHelper, Locale } from "@churchapps/apphelper";
@@ -10,6 +10,7 @@ interface Props {
   batchId: string;
   batchDate?: Date;
   funds: FundInterface[];
+  currency?: string;
   updatedFunction: () => void;
   onOpenFullEditor?: () => void;
 }
@@ -23,6 +24,7 @@ export const BulkDonationEntry = memo((props: Props) => {
   const amountInputRef = useRef<HTMLInputElement>(null);
   const savingRef = useRef(false);
   const [errors, setErrors] = React.useState<string[]>([]);
+  const currency = (props.currency || "usd").toLowerCase();
 
   const [defaultValues, setDefaultValues] = React.useState({
     date: DateHelper.formatHtml5Date(props.batchDate || new Date()),
@@ -53,37 +55,31 @@ export const BulkDonationEntry = memo((props: Props) => {
   }, []);
 
   const handleSave = useCallback(async () => {
-    if (!amount || parseFloat(amount) <= 0) return;
+    if (!amount || !(parseFloat(amount) > 0)) {
+      setErrors([Locale.label("donations.logGift.amountError", "Enter an amount greater than zero, such as 25.00.")]);
+      amountInputRef.current?.focus();
+      return;
+    }
     if (savingRef.current) return;
     savingRef.current = true;
     setErrors([]);
 
-    const donation: DonationInterface = {
+    // The fund row rides with the gift so a Donation trigger sees the fund when it fires.
+    const fundDonation: FundDonationInterface = { fundId: defaultValues.fundId, amount: parseFloat(amount), currency };
+    const donation: DonationInterface & { fundDonations: FundDonationInterface[] } = {
       batchId: props.batchId,
       personId: selectedPerson?.id || "",
       amount: parseFloat(amount),
       donationDate: defaultValues.date,
       method: defaultValues.method,
       methodDetails: methodDetails || undefined,
-      notes: defaultValues.notes || undefined
+      notes: defaultValues.notes || undefined,
+      currency,
+      fundDonations: [fundDonation]
     };
 
     try {
-      const savedDonations = await ApiHelper.post("/donations", [donation], "GivingApi");
-      const donationId = savedDonations[0].id;
-
-      const fundDonation: FundDonationInterface = {
-        donationId,
-        fundId: defaultValues.fundId,
-        amount: parseFloat(amount)
-      };
-
-      try {
-        await ApiHelper.post("/funddonations", [fundDonation], "GivingApi");
-      } catch (e) {
-        await ApiHelper.delete("/donations/" + donationId, "GivingApi").catch(() => {});
-        throw e;
-      }
+      await ApiHelper.post("/donations", [donation], "GivingApi");
     } catch {
       setErrors([Locale.label("common.saveError")]);
       return;
@@ -98,7 +94,7 @@ export const BulkDonationEntry = memo((props: Props) => {
     props.updatedFunction();
 
     setTimeout(() => searchInputRef.current?.focus(), 100);
-  }, [amount, methodDetails, selectedPerson, defaultValues, props]);
+  }, [amount, methodDetails, selectedPerson, defaultValues, currency, props]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
@@ -206,6 +202,7 @@ export const BulkDonationEntry = memo((props: Props) => {
           onKeyDown={handleKeyDown}
           sx={{ flex: 1, "& .MuiInputBase-input": { typography: "h3", fontVariantNumeric: "tabular-nums" } }}
           autoFocus
+          slotProps={{ input: { endAdornment: <InputAdornment position="end" data-testid="bulk-donation-currency">{currency.toUpperCase()}</InputAdornment> } }}
           data-testid="bulk-donation-amount"
         />
         {defaultValues.method !== "Cash" && (

@@ -64,7 +64,12 @@ test.describe.serial("Website new elements", () => {
     const blankTemplate = page.locator('[data-testid="template-blank"]');
     await expect(blankTemplate).toBeVisible({ timeout: 10000 });
     await blankTemplate.click();
+    // Clicking an element card before the new section is loaded reopens the layout picker instead.
+    const newSectionPost = page.waitForResponse(r => r.url().endsWith("/content/sections") && r.request().method() === "POST", { timeout: 15000 });
+    const treeReload = page.waitForResponse(r => r.url().includes("/content/pages/") && r.url().includes("/tree?id=") && r.request().method() === "GET", { timeout: 15000 });
     await page.locator("button").getByText("Save").click();
+    expect((await newSectionPost).status()).toBe(200);
+    await treeReload;
 
     // Click the Icon Feature catalog card — inserts it and opens its edit form.
     await ensurePanelOpen("draggable-element-iconFeature");
@@ -121,8 +126,27 @@ test.describe.serial("Website new elements", () => {
     await expect(list.getByText("September 5, 2026")).toBeVisible();
     await expect(list.locator('[data-testid="podcast-episode"]')).toHaveCount(2);
     await expect(list.locator('[data-testid="podcast-audio"]').first()).toHaveAttribute("src", "https://cdn.example.com/audio/ep-2.mp3");
-    await page.screenshot({ path: ".pr-screenshots/after.png", fullPage: true });
+    await page.screenshot({ path: test.info().outputPath("after.png"), fullPage: true });
     await page.unroute(/\/content\/podcast\/feed\?/);
+  });
+
+  test("adds a Social Icons element with a WhatsApp link", async () => {
+    await openEditor();
+
+    await ensurePanelOpen("draggable-element-socialIcons");
+    const card = page.locator('[data-testid="draggable-element-socialIcons"]');
+    await expect(card).toBeVisible({ timeout: 10000 });
+    await card.click();
+
+    const whatsappInput = page.locator('[data-testid="social-whatsapp-input"] input');
+    await expect(whatsappInput).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('[data-testid="social-whatsapp-input"] label')).toHaveText("WhatsApp");
+    await whatsappInput.fill("https://wa.me/15551234567");
+    const elementPost = page.waitForResponse(r => r.url().endsWith("/content/elements") && r.request().method() === "POST", { timeout: 15000 });
+    await page.locator("button").getByText("Save").click();
+    const saved = await elementPost;
+    expect(saved.status()).toBe(200);
+    expect(JSON.parse((await saved.json())[0].answersJSON).whatsapp).toBe("https://wa.me/15551234567");
   });
 
   test("sets a bottom wave divider on the section", async () => {

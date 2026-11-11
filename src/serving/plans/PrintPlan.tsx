@@ -1,5 +1,5 @@
 import { ApiHelper, ArrayHelper, DateHelper, type PersonInterface, Locale, Loading, SmallButton } from "@churchapps/apphelper";
-import { Box, Grid } from "@mui/material";
+import { Box, Checkbox, FormControlLabel, Grid } from "@mui/material";
 import React, { useContext, useEffect } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { type PlanItemInterface, type PlanItemTimeInterface } from "../../helpers";
@@ -21,6 +21,7 @@ export const PrintPlan = () => {
   const church = useContext(UserContext)?.userChurch?.church;
   const churchName = church?.name || "";
   const printLogo = usePrintLogo(church?.id);
+  const [showHeading, setShowHeading] = React.useState(() => localStorage.getItem("printPlan.showHeading") !== "false");
   const [plan, setPlan] = React.useState<PlanInterface | null>(null);
   const [positions, setPositions] = React.useState<PositionInterface[]>([]);
   const [assignments, setAssignments] = React.useState<AssignmentInterface[]>([]);
@@ -237,12 +238,9 @@ export const PrintPlan = () => {
       .filter((p) => p.categoryName === categoryName)
       .forEach((p) => {
         const names: string[] = [];
-        assignments
-          .filter((a) => a.positionId === p.id)
-          .forEach((a) => {
-            const person = people.find((p) => p.id === a.personId);
-            names.push(person?.name?.display || "");
-          });
+        people.forEach((person) => {
+          if (assignments.some((a) => a.positionId === p.id && a.personId === person.id)) names.push(person?.name?.display || "");
+        });
 
         result.push(
           <div key={p.id}>
@@ -275,6 +273,16 @@ export const PrintPlan = () => {
     return texts.join(" / ");
   };
 
+  // Empty columns and the empty team box are left off the printout (ChurchAppsSupport#1409).
+  const hasLengths = React.useMemo(() => {
+    const walk = (items: PlanItemInterface[]): boolean =>
+      items.some((pi) => (pi.itemType !== "header" && (pi.seconds || 0) > 0) || (pi.children ? walk(pi.children) : false));
+    return walk(planItems);
+  }, [planItems]);
+  const showClock = serviceTimes.length > 0 || hasLengths;
+  const timeColumnCount = serviceTimes.length || (showClock ? 1 : 0);
+  const hasAssignments = assignments.some((a) => a.personId && positions.some((p) => p.id === a.positionId));
+
   // Per-column accumulators are mutated as the recursive renderer walks the tree.
   // Single-column fallback uses index 0; multi-column uses one entry per service time.
   const renderRows = () => {
@@ -288,7 +296,7 @@ export const PrintPlan = () => {
         if (pi.itemType !== "header") {
           const timeCells: JSX.Element[] = [];
           if (serviceTimes.length === 0) {
-            timeCells.push(<td key="t0" style={Styles.tableCell}>{formatTime(accumulators[0])}</td>);
+            if (showClock) timeCells.push(<td key="t0" style={Styles.tableCell}>{formatTime(accumulators[0])}</td>);
             accumulators[0] += pi.seconds || 0;
           } else {
             serviceTimes.forEach((st, i) => {
@@ -310,13 +318,13 @@ export const PrintPlan = () => {
                   <span style={{ float: "right", paddingLeft: 10, color: "#555" }}>{getPositionText(pi)}</span>
                 )}
               </td>
-              <td style={{ ...Styles.tableCell, textAlign: "right" }}>{formatTime(pi.seconds || 0)}</td>
+              {hasLengths && <td style={{ ...Styles.tableCell, textAlign: "right" }}>{pi.seconds ? formatTime(pi.seconds) : ""}</td>}
             </tr>
           );
         } else {
           // Section headers span every column so the printed sheet shows where each part of
           // the service begins and who leads it (ChurchAppsSupport#1086).
-          const columnCount = (serviceTimes.length || 1) + 2;
+          const columnCount = timeColumnCount + 1 + (hasLengths ? 1 : 0);
           const positionText = getPositionText(pi);
           rows.push(
             <tr key={pi.id} className="printSectionRow">
@@ -340,7 +348,7 @@ export const PrintPlan = () => {
   const renderHeaderRow = () => {
     const cells: JSX.Element[] = [];
     if (serviceTimes.length === 0) {
-      cells.push(<td key="t0" style={{ textAlign: "left", paddingLeft: 10 }}>{Locale.label("plans.printPlan.time")}</td>);
+      if (showClock) cells.push(<td key="t0" style={{ textAlign: "left", paddingLeft: 10 }}>{Locale.label("plans.printPlan.time")}</td>);
     } else {
       serviceTimes.forEach((st) => {
         const label = formatClockTime(st.startTime, 0) || st.displayName || Locale.label("plans.printPlan.time");
@@ -348,7 +356,7 @@ export const PrintPlan = () => {
       });
     }
     cells.push(<td key="item"></td>);
-    cells.push(<td key="length" style={{ textAlign: "right", paddingRight: 10 }}>{Locale.label("plans.printPlan.length")}</td>);
+    if (hasLengths) cells.push(<td key="length" style={{ textAlign: "right", paddingRight: 10 }}>{Locale.label("plans.printPlan.length")}</td>);
     return <tr style={Styles.inverseHeader}>{cells}</tr>;
   };
 
@@ -371,8 +379,19 @@ export const PrintPlan = () => {
     tableCell: { verticalAlign: "top", padding: 5, textAlign: "left" }
   };
 
+  const handleShowHeadingChange = (checked: boolean) => {
+    setShowHeading(checked);
+    localStorage.setItem("printPlan.showHeading", String(checked));
+  };
+
   const renderWorshipOrder = () => (
     <div style={Styles.body} className="printBackgrounds">
+      <Box className="print-toolbar no-print" sx={{ px: 1, pb: 1, textAlign: "left" }}>
+        <FormControlLabel
+          control={<Checkbox checked={showHeading} onChange={(e) => handleShowHeadingChange(e.target.checked)} data-testid="print-plan-show-heading" />}
+          label={Locale.label("plans.printPlan.showHeading")}
+        />
+      </Box>
       {(churchName || printLogo.logoUrl || plan?.name) && (
         <div style={{ textAlign: "center", marginBottom: 10 }}>
           <PrintChurchHeader churchName={churchName} logoUrl={printLogo.logoUrl} style={{ margin: "0 auto 4px" }}>
@@ -381,23 +400,33 @@ export const PrintPlan = () => {
           {plan?.name && <div style={{ fontSize: 14 }}>{plan.name}</div>}
         </div>
       )}
-      <Grid container>
-        <Grid size={{ xs: 4 }} style={Styles.inverseHeader}>
-          {Locale.label("plans.printPlan.serviceOrder")}
+      {showHeading ? (
+        <Grid container>
+          <Grid size={{ xs: 4 }} style={Styles.inverseHeader}>
+            {Locale.label("plans.printPlan.serviceOrder")}
+          </Grid>
+          <Grid size={{ xs: 4 }} style={{ ...Styles.header, borderTop: "5px solid #000" }}>
+            {plan && DateHelper.prettyDate(DateHelper.toDate(plan.serviceDate))}
+          </Grid>
+          <Grid size={{ xs: 4 }} style={Styles.inverseHeader}>
+            {Locale.label("plans.printPlan.serviceOrder")}
+          </Grid>
         </Grid>
-        <Grid size={{ xs: 4 }} style={{ ...Styles.header, borderTop: "5px solid #000" }}>
-          {plan && DateHelper.prettyDate(DateHelper.toDate(plan.serviceDate))}
+      ) : (
+        <Grid container>
+          <Grid size={{ xs: 12 }} style={{ ...Styles.header, borderTop: "5px solid #000" }}>
+            {plan && DateHelper.prettyDate(DateHelper.toDate(plan.serviceDate))}
+          </Grid>
         </Grid>
-        <Grid size={{ xs: 4 }} style={Styles.inverseHeader}>
-          {Locale.label("plans.printPlan.serviceOrder")}
-        </Grid>
-      </Grid>
+      )}
       <div style={Styles.divider}>&nbsp;</div>
       <Grid container>
-        <Grid size={{ xs: 4 }} style={{ padding: 5 }}>
-          <div style={{ border: "2px solid #000", textAlign: "left", padding: 10 }}>{getPositionCategories()}</div>
-        </Grid>
-        <Grid size={{ xs: 8 }} style={{ padding: 5 }}>
+        {hasAssignments && (
+          <Grid size={{ xs: 4 }} style={{ padding: 5 }}>
+            <div className="printTeamBox" style={{ border: "2px solid #000", textAlign: "left", padding: 10 }}>{getPositionCategories()}</div>
+          </Grid>
+        )}
+        <Grid size={{ xs: hasAssignments ? 8 : 12 }} style={{ padding: 5 }} className="printOrderColumn">
           <div style={{ border: "5px solid #000" }}>
             <table style={{ width: "100%", margin: 0 }} cellSpacing={0}>
               <tbody>

@@ -1,10 +1,12 @@
-import { request, type Page } from "@playwright/test";
+import fs from "fs";
+import { request, test as plainTest, type APIRequestContext, type Page, type Route } from "@playwright/test";
 import { groupsTest as test, loggedInTest, expect } from "./helpers/test-fixtures";
-import { dismissSendInviteIfPresent, confirmDelete, openSeedGroup, SESSION_GROUP } from "./helpers/fixtures";
+import { dismissSendInviteIfPresent, confirmDelete, openSeedGroup, SESSION_GROUP, personAddButton } from "./helpers/fixtures";
 import { login } from "./helpers/auth";
-import { navigateToGroups } from "./helpers/navigation";
+import { navigateToGroups, openPrimaryNav } from "./helpers/navigation";
 import { STORAGE_STATE_PATH } from "./global-setup";
 import { mockChurchLogo } from "./helpers/print-logo";
+import { createLimitedRole, createNamesOnlyRole, deleteRole, loginAsVolunteer } from "./helpers/names-only-role";
 
 // The group record opens on its summary plate; members and sessions are ?view= slices.
 async function openSeedMembers(page: Page, name?: string) {
@@ -73,6 +75,17 @@ async function addSessionForAllGroups(page: Page, group: string, date: string) {
   expect((await saved).ok()).toBeTruthy();
 }
 
+// Nursery meets at 9:00 AM and 10:30 AM; its two same-day sessions must be told apart by service time.
+const API = process.env.API_BASE || "http://localhost:8084";
+const NURSERY = "GRP00000007";
+
+async function apiAuth(api: APIRequestContext) {
+  const res = await api.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+  const body = await res.json();
+  const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+  return { headers: { Authorization: "Bearer " + uc.jwt } };
+}
+
 test.describe.serial("Group Management", () => {
   let page: Page;
 
@@ -123,17 +136,24 @@ test.describe.serial("Group Management", () => {
       await openSeedMembers(page);
       await expect(page).toHaveURL(/\/groups\/(?!health|pending)[^/?#]+/);
 
+      // Carol Clark is not in the seed group (Demo User already is, so search no longer offers them).
       const searchInput = page.locator('input[name="personAddText"]');
-      await searchInput.fill("Demo User");
+      await searchInput.fill("Carol Clark");
       const searchBtn = page.locator('[data-testid="search-button"]');
       await searchBtn.click();
 
-      const addBtn = page.locator('[data-testid^="add-person-button-"]').first();
+      const addBtn = personAddButton(page.locator("#personAddBox"), "Carol Clark");
       await expect(addBtn).toBeVisible({ timeout: 10000 });
+      const added = page.waitForResponse((r) => r.url().includes("/groupmembers") && r.request().method() === "POST");
       await addBtn.click();
+      expect((await added).ok()).toBeTruthy();
       await dismissSendInviteIfPresent(page);
-      const validatedPerson = page.locator('[data-testid="display-box-content"] td').getByText("Demo User");
-      await expect(validatedPerson).toHaveCount(1);
+      const member = page.locator("#groupMemberTable tr").filter({ hasText: "Carol Clark" });
+      await expect(member).toHaveCount(1);
+
+      await member.locator('[data-testid^="remove-member-button-"]').click();
+      await confirmDelete(page);
+      await expect(member).toHaveCount(0, { timeout: 10000 });
     });
 
     test("adds a newly created person straight to the group", async () => {
@@ -329,6 +349,45 @@ test.describe.serial("Group Management", () => {
   });
 
   test.describe("Sessions", () => {
+    const nurserySessionIds: string[] = [];
+    let lateNurserySessionId = "";
+
+    test.beforeAll(async () => {
+      const api = await request.newContext();
+      const auth = await apiAuth(api);
+      // Clear sessions an earlier run left on this date so the list shows one row per service time.
+      const existing = await (await api.get(`${API}/attendance/sessions?groupId=${NURSERY}`, auth)).json();
+      for (const s of existing || []) if (String(s.sessionDate).startsWith("2026-10-11")) await api.delete(`${API}/attendance/sessions/${s.id}`, auth);
+      const res = await api.post(`${API}/attendance/sessions`, {
+        ...auth,
+        data: [
+          { groupId: NURSERY, serviceTimeId: "SST00000001", sessionDate: "2026-10-11T09:00:00" },
+          { groupId: NURSERY, serviceTimeId: "SST00000002", sessionDate: "2026-10-11T10:30:00" }
+        ]
+      });
+      const sessions = await res.json();
+      sessions.forEach((s: any) => nurserySessionIds.push(s.id));
+      lateNurserySessionId = sessions[1].id;
+      await api.dispose();
+    });
+
+    test.afterAll(async () => {
+      const api = await request.newContext();
+      const auth = await apiAuth(api);
+      for (const id of nurserySessionIds) await api.delete(`${API}/attendance/sessions/${id}`, auth);
+      await api.dispose();
+    });
+
+    test("Sessions list names the service time of each same-day session", async () => {
+      await page.goto(`/groups/${NURSERY}?view=sessions`);
+      // The list opens on the newest year, and other tests leave later Nursery sessions behind.
+      await page.getByTestId("year-pill-2026").click({ timeout: 15000 });
+      const rows = page.getByRole("listitem").filter({ hasText: "10/11/2026" });
+      await expect(rows).toHaveCount(2, { timeout: 15000 });
+      await expect(rows.filter({ hasText: "9:00 AM Service" })).toHaveCount(1);
+      await expect(rows.filter({ hasText: "10:30 AM Service" })).toHaveCount(1);
+    });
+
     test("should cancel adding session to group", async () => {
       await openSeedGroup(page, SESSION_GROUP);
       await expect(page).toHaveURL(/\/groups\/(?!health|pending)[^/?#]+/);
@@ -375,6 +434,31 @@ test.describe.serial("Group Management", () => {
       await box.getByRole("button", { name: "Save", exact: true }).click();
       await selectSession(page, date);
       await expect(page.locator('[data-testid="session-notes"] strong')).toHaveText("Romans 9", { timeout: 10000 });
+    });
+
+    test("session export CSV includes the session notes", async () => {
+      const date = "2025-09-05";
+      await openSeedGroup(page, SESSION_GROUP);
+      await page.getByTestId("group-all-sessions").click();
+      await page.locator("button").getByText("New").first().click();
+      const box = page.locator('[data-cy="add-session-box"]');
+      await box.locator('[data-testid="session-date-input"] input').fill(date);
+      await box.locator(".editor-input[contenteditable='true']").first().click();
+      await page.keyboard.type("Topic Romans 9 and prayer for Donald Clark");
+      await box.getByRole("button", { name: "Save", exact: true }).click();
+      await selectSession(page, date);
+
+      // The export only appears once someone has been marked present.
+      await page.getByTestId("attendance-select-all").click();
+      await saveAttendance(page);
+
+      // ExportLink lazy-loads react-csv; wait for the real <a download> wrapper.
+      const exportLink = page.locator('a[download$="_visits.csv"]');
+      await expect(exportLink).toBeVisible({ timeout: 15000 });
+      const [download] = await Promise.all([page.waitForEvent("download", { timeout: 15000 }), exportLink.click()]);
+      const content = fs.readFileSync((await download.path())!, "utf-8").replace(/^\uFEFF/, "");
+      expect(content.split("\n")[0]).toContain("sessionNotes");
+      expect(content).toContain("Topic Romans 9 and prayer for Donald Clark");
     });
 
     test("adds a session for every group in the service time at once, without duplicates", async () => {
@@ -507,6 +591,20 @@ test.describe.serial("Group Management", () => {
       await expect(page.getByTestId("command-palette-open")).toBeVisible({ timeout: 15000 });
     });
 
+    test("roll sheet printed from a session shows that session's service time", async () => {
+      await page.goto(`/groups/${NURSERY}?view=sessions&sessionId=${lateNurserySessionId}`);
+      await page.evaluate(() => {
+        window.open = ((url: string) => { (window as any).__rosterUrl = url; return null; }) as any;
+      });
+      await page.getByTestId("session-print-roster-button").click();
+      const url: string = await page.evaluate(() => (window as any).__rosterUrl);
+      await page.goto(url.replace("&autoprint=1", ""));
+      await expect(page.locator("h1.roster-title")).toHaveText("Nursery (0-2)", { timeout: 15000 });
+      await expect(page.locator(".roster-meta")).toContainText("10:30 AM Service");
+      await page.goBack();
+      await expect(page.getByTestId("command-palette-open")).toBeVisible({ timeout: 15000 });
+    });
+
     test("prints a contact roster from the members tab", async () => {
       // The group record opens on the summary plate. The print button lives on the members tab.
       await openSeedMembers(page, SESSION_GROUP);
@@ -615,6 +713,43 @@ test.describe("Group communication and roster controls", () => {
     await expect(page.locator("#groupMembersBox textarea").first()).toBeVisible({ timeout: 10000 });
   });
 
+  test("Notify opens the push notification dialog for the group", async ({ page }) => {
+    await openSeedGroup(page);
+    await page.getByTestId("notify-group-button").click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Push Notification: Sunday Morning Service");
+    await expect(dialog).toContainText(/\d+ of \d+ members have B1App PWA push enabled\./, { timeout: 15000 });
+    await expect(dialog.getByLabel("Send now")).toBeChecked();
+    await expect(dialog.getByLabel("Schedule for later")).toBeVisible();
+    for (const label of ["Title", "Message", "Open link or flyer URL", "Image URL"]) await expect(dialog.getByLabel(label, { exact: true })).toBeVisible();
+    await expect(dialog).toContainText("Notification title");
+    await dialog.getByLabel("Title", { exact: true }).fill("Potluck Sunday");
+    await expect(dialog).toContainText("Potluck Sunday");
+    await dialog.getByLabel("Open link or flyer URL").fill("example.com/flyer");
+    await expect(dialog).toContainText("Use an https URL or a relative app path.");
+    await expect(dialog.getByRole("button", { name: "Send Notification" })).toBeDisabled();
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toBeHidden();
+  });
+
+  test("Add Person leaves out people who are already in the group", async ({ page }) => {
+    await openSeedMembers(page);
+    // James Smith leads the seed group; searching for him must not offer an add button that does nothing.
+    const member = page.locator("#groupMemberTable").getByRole("link", { name: "James Smith", exact: true });
+    await expect(member).toBeVisible({ timeout: 10000 });
+    const memberId = ((await member.getAttribute("href")) || "").split("/").pop();
+    await expect(page.locator('[data-testid^="add-person-button-"]').first()).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(`[data-testid="add-person-button-${memberId}"]`)).toHaveCount(0);
+
+    const searched = page.waitForResponse((r) => r.url().includes("/people/search") && r.ok());
+    await page.locator('input[name="personAddText"]').fill("James Smith");
+    await page.locator('[data-testid="search-button"]').click();
+    await searched;
+    // The search for "James Smith" also matches other Smiths; only the member is left out.
+    await expect(page.locator("#personAddBox").getByRole("button", { name: "Ethan Smith" })).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(`[data-testid="add-person-button-${memberId}"]`)).toHaveCount(0);
+  });
+
   test("promotes a group member to leader and back", async ({ page }) => {
     await openSeedMembers(page);
 
@@ -661,6 +796,15 @@ test.describe("Group service times (optional) field", () => {
     await assignedRow.locator('button:has(svg[data-testid="PersonRemoveIcon"])').click();
     await delResp;
     await expect(box.locator("table tbody tr").filter({ hasText: "9:00 AM Service" })).toHaveCount(0, { timeout: 10000 });
+  });
+
+  test("Add Service Time select shows one dropdown arrow", async ({ page }) => {
+    await page.goto("/groups/GRP00000007");
+    await editGroupButton(page).first().click();
+    const chooser = page.locator("#groupDetailsBox").locator(".MuiFormControl-root").filter({ has: page.locator('[data-cy="choose-service-time"]') });
+    await expect(chooser).toBeVisible({ timeout: 10000 });
+    await expect(chooser.locator(".MuiSelect-icon")).toHaveCount(1);
+    await expect(chooser.getByText("arrow_drop_down", { exact: true })).toHaveCount(0);
   });
 });
 
@@ -844,4 +988,247 @@ loggedInTest("printed rosters show the church logo above the group name", async 
   await expect(logos).toHaveCount(5);
   await expect(logos.first()).toHaveAttribute("alt", "Grace Community Church");
   await expect(page.locator(".roster-church")).toHaveCount(5);
+});
+
+// ChurchAppsSupport#1336: session attendance saves the roster together, warns on leave mid-save, and fits a phone.
+// Demo: SES00000001 is the Sunday Morning Service group's 9:00 AM session, with people already marked present.
+loggedInTest.describe("Session attendance save and layout", () => {
+  const SESSION_URL = "/groups/GRP00000001?view=sessions&sessionId=SES00000001";
+
+  async function openSession(page: Page) {
+    await page.goto(SESSION_URL);
+    await expect(page.locator('[data-cy="session-present-msg"]')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("session-attendance-status-button")).toBeVisible({ timeout: 10000 });
+  }
+
+  loggedInTest("warns before the tab closes while attendance is still saving", async ({ page }) => {
+    await openSession(page);
+    await expect(page.locator('input[type="checkbox"]:checked').first()).toBeVisible({ timeout: 10000 });
+
+    // Hold every save request so the page stays on "Saving...".
+    const held: Route[] = [];
+    await page.route(/\/attendance\/visitsessions(\/log|\?sessionId=)/, (route) => {
+      if (route.request().method() === "GET") return route.continue();
+      held.push(route);
+    });
+
+    await page.getByTestId("attendance-select-none").click();
+    await page.getByTestId("save-attendance-button").click();
+    await expect(page.getByTestId("save-attendance-button")).toHaveText("Saving...", { timeout: 10000 });
+    // The whole roster goes out at once rather than one person after another.
+    await expect.poll(() => held.length, { timeout: 5000 }).toBeGreaterThan(1);
+
+    const warned = await page.evaluate(() => {
+      const e = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(e);
+      return e.defaultPrevented;
+    });
+    expect(warned).toBe(true);
+
+    // Abort the held requests so the seeded attendance stays as it was.
+    await Promise.all(held.map((r) => r.abort()));
+  });
+
+  loggedInTest.describe("phone width", () => {
+    loggedInTest.use({ viewport: { width: 390, height: 844 } });
+
+    loggedInTest("session card with a service time fits a 390px screen", async ({ page }) => {
+      await openSession(page);
+      await expect(page.getByTestId("session-print-all-rosters-button")).toBeVisible();
+      const width = await page.evaluate(() => document.documentElement.scrollWidth);
+      expect(width).toBeLessThanOrEqual(390);
+    });
+
+    loggedInTest("member list keeps the leader and remove buttons on a 390px screen", async ({ page }) => {
+      await openSeedMembers(page);
+      const table = page.locator("#groupMemberTable");
+      const box = await table.locator("..").boundingBox();
+      for (const id of ["promote-leader-button-", "remove-member-button-"]) {
+        const btn = table.locator(`[data-testid^="${id}"]`).first();
+        await expect(btn).toBeVisible({ timeout: 10000 });
+        const b = await btn.boundingBox();
+        expect(b!.x + b!.width, `${id} must sit inside the member list`).toBeLessThanOrEqual(box!.x + box!.width);
+      }
+    });
+  });
+});
+
+// Both describes below grant a role to volunteer@b1.church, so they share one worker in order;
+// otherwise the attendance role leaks into the names-only redirect checks.
+plainTest.describe("Names-only volunteer roles", () => {
+  plainTest.describe.configure({ mode: "default" });
+
+  // ChurchAppsSupport#1284: a user whose only people permission is View Names cannot open the All groups list or print every class.
+  plainTest.describe("View People Names Only", () => {
+    plainTest.use({ storageState: { cookies: [], origins: [] } });
+    // volunteer@b1.church is a plain member (not the leader) of Greeters Ministry.
+    const GREETERS = "GRP00000025";
+    const apiBase = process.env.API_BASE || "http://localhost:8084";
+    let roleId = "";
+    let sessionId = "";
+    let eventId = "";
+
+    const adminContext = async () => {
+      const ctx = await request.newContext();
+      const login = await (await ctx.post(`${apiBase}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+      const jwt = login.userChurches.find((uc: { church: { id: string } }) => uc.church.id === "CHU00000001").jwt;
+      return { ctx, auth: { headers: { Authorization: "Bearer " + jwt } } };
+    };
+
+    plainTest.beforeAll(async () => {
+      roleId = await createNamesOnlyRole("Issue 1284 Names Only (groups)");
+      const { ctx, auth } = await adminContext();
+      const sessions = await (await ctx.post(`${apiBase}/attendance/sessions`, { ...auth, data: [{ groupId: GREETERS, sessionDate: "2026-01-04T12:00:00" }] })).json();
+      sessionId = sessions[0].id;
+      const start = new Date(Date.now() + 7 * 86400000);
+      const end = new Date(start.getTime() + 3600000);
+      const events = await (await ctx.post(`${apiBase}/content/events`, { ...auth, data: [{ groupId: GREETERS, title: "E2E 1287 Event", start, end, allDay: false, visibility: "public" }] })).json();
+      eventId = events[0].id;
+      await ctx.dispose();
+    });
+
+    plainTest.afterAll(async () => {
+      const { ctx, auth } = await adminContext();
+      if (sessionId) await ctx.delete(`${apiBase}/attendance/sessions/${sessionId}`, auth);
+      if (eventId) await ctx.delete(`${apiBase}/content/events/${eventId}`, auth);
+      await ctx.dispose();
+      await deleteRole(roleId);
+    });
+
+    plainTest("groups list redirects home and print all classes prints nothing", async ({ page }) => {
+      await loginAsVolunteer(page);
+      await page.goto("/groups");
+      await page.waitForURL((url) => url.pathname === "/", { timeout: 15000 });
+      await expect(page.getByTestId("home-my-groups")).toBeVisible({ timeout: 15000 });
+      await expect(page.getByTestId("groups-search")).toHaveCount(0);
+      expect(new URL(page.url()).pathname).toBe("/");
+
+      await page.goto("/groups/print-roster?serviceTimeId=SST00000004&date=2025-12-03");
+      await expect(page.getByText("No classes found to print.")).toBeVisible({ timeout: 15000 });
+      await expect(page.locator("h1.roster-title")).toHaveCount(0);
+    });
+
+    plainTest("member group hides roster print and event delete", async ({ page }) => {
+      await loginAsVolunteer(page);
+      await page.goto(`/groups/${GREETERS}?view=sessions`);
+      await expect(page.locator('[data-cy="session-present-msg"]')).toBeVisible({ timeout: 15000 });
+      await expect(page.getByTestId("session-print-roster-button")).toHaveCount(0);
+
+      await page.goto(`/groups/${GREETERS}?view=members`);
+      await expect(page.locator("#groupMembersBox")).toBeVisible({ timeout: 15000 });
+      await expect(page.getByTestId("print-roster-button")).toHaveCount(0);
+
+      await page.goto(`/groups/${GREETERS}?view=calendar`);
+      await expect(page.getByRole("cell", { name: "E2E 1287 Event", exact: true })).toBeVisible({ timeout: 15000 });
+      await expect(page.getByTestId(`delete-event-${eventId}`)).toHaveCount(0);
+
+      await page.goto(`/groups/print-roster?groupId=${GREETERS}`);
+      await expect(page.getByText("No classes found to print.")).toBeVisible({ timeout: 15000 });
+      await expect(page.locator("h1.roster-title")).toHaveCount(0);
+    });
+
+    plainTest("group page hides Email and the email templates page redirects home", async ({ page }) => {
+      await loginAsVolunteer(page);
+      await page.goto(`/groups/${GREETERS}`);
+      await expect(page.getByRole("heading", { name: "Greeters Ministry" })).toBeVisible({ timeout: 15000 });
+      await expect(page.getByTestId("email-group-button")).toHaveCount(0);
+
+      await page.goto("/settings/email-templates");
+      await page.waitForURL((url) => url.pathname === "/", { timeout: 15000 });
+    });
+  });
+
+  // ChurchAppsSupport#1308: View People Names Only plus attendance View/Edit is enough to
+  // open Groups and record attendance. Full profiles stay closed.
+  plainTest.describe("View People Names Only with attendance", () => {
+    plainTest.use({ storageState: { cookies: [], origins: [] } });
+
+    const API = process.env.API_BASE || "http://localhost:8084";
+    const NURSERY = "GRP00000007";
+    const OLIVIA = "PER00000029";
+    let roleId = "";
+    let sessionId = "";
+    let visitorId = "";
+
+    const admin = async () => {
+      const ctx = await request.newContext();
+      const login = await (await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+      const jwt = login.userChurches.find((uc: { church: { id: string } }) => uc.church.id === "CHU00000001").jwt;
+      return { ctx, auth: { headers: { Authorization: "Bearer " + jwt } } };
+    };
+
+    plainTest.beforeAll(async () => {
+      roleId = await createLimitedRole("Issue 1308 Attendance", [
+        { apiName: "MembershipApi", contentType: "People", action: "View Names" },
+        { apiName: "AttendanceApi", contentType: "Attendance", action: "View" },
+        { apiName: "AttendanceApi", contentType: "Attendance", action: "Edit" }
+      ]);
+      const { ctx, auth } = await admin();
+      const sessions = await (await ctx.post(`${API}/attendance/sessions`, { ...auth, data: [{ groupId: NURSERY, sessionDate: "2026-10-20T15:00:00" }] })).json();
+      sessionId = sessions[0].id;
+      const people = await (await ctx.post(`${API}/membership/people`, {
+        ...auth,
+        data: [{ name: { first: "Zacchaeus", last: "Attendance" }, membershipStatus: "Visitor", contactInfo: { email: "zacchaeus.attendance@example.com" } }]
+      })).json();
+      visitorId = people[0].id;
+      await ctx.dispose();
+    });
+
+    plainTest.afterAll(async () => {
+      const { ctx, auth } = await admin();
+      if (sessionId) await ctx.delete(`${API}/attendance/sessions/${sessionId}`, auth);
+      if (visitorId) await ctx.delete(`${API}/membership/people/${visitorId}`, auth);
+      await ctx.dispose();
+      await deleteRole(roleId);
+    });
+
+    plainTest("names-only attendance taker opens the nursery and logs attendance without a profile", async ({ page }) => {
+      await loginAsVolunteer(page);
+
+      // The header search bar is the menu. People opens Groups for this role.
+      await openPrimaryNav(page);
+      const palette = page.getByTestId("command-palette");
+      await palette.getByRole("textbox").fill("People");
+      const people = palette.getByRole("button", { name: "People", exact: true }).first();
+      await expect(people).toBeVisible();
+      await people.click();
+      await expect(page).toHaveURL(/\/groups\/?$/, { timeout: 15000 });
+      await expect(page.getByTestId("groups-search")).toBeVisible();
+      const search = page.getByTestId("groups-search").locator("input");
+      await search.fill("Care");
+      await expect(page.getByRole("link", { name: "Care & Recovery" })).toHaveCount(0);
+      await search.fill("Nursery");
+      await page.getByRole("link", { name: "Nursery (0-2)" }).click();
+      await page.waitForURL(new RegExp(`/groups/${NURSERY}`), { timeout: 15000 });
+
+      await page.goto(`/groups/${NURSERY}?view=sessions&sessionId=${sessionId}`);
+      const olivia = page.locator('[data-testid="session-roster-row"]').filter({ hasText: "Olivia Davis" });
+      await expect(olivia).toBeVisible({ timeout: 15000 });
+      await expect(olivia.locator("a")).toHaveCount(0);
+      await expect(page.getByText("258 Elm Street")).toHaveCount(0);
+      await expect(page.getByText("zacchaeus.attendance@example.com")).toHaveCount(0);
+
+      await page.getByTestId("person-search-input").locator("input").fill("Zacchaeus Attendance");
+      await page.getByTestId("search-button").click();
+      await page.getByTestId(`add-person-button-${visitorId}`).click();
+      const visitor = page.locator('[data-testid="session-roster-row"]').filter({ hasText: "Zacchaeus Attendance" });
+      await expect(visitor).toBeVisible({ timeout: 10000 });
+
+      await olivia.getByRole("checkbox", { name: "Olivia Davis" }).check();
+      await page.getByTestId("save-attendance-button").click();
+      await expect(page.getByTestId("attendance-save-message")).toHaveText("Attendance saved.", { timeout: 15000 });
+
+      await page.reload();
+      await expect(olivia).toBeVisible({ timeout: 15000 });
+      await expect(olivia.getByRole("checkbox", { name: "Olivia Davis" })).toBeChecked();
+      await expect(visitor).toBeVisible({ timeout: 15000 });
+      await expect(visitor.getByRole("checkbox", { name: "Zacchaeus Attendance" })).toBeChecked();
+      await expect(page.getByText("zacchaeus.attendance@example.com")).toHaveCount(0);
+
+      await page.goto(`/people/${OLIVIA}`);
+      await page.waitForURL((url) => url.pathname === "/", { timeout: 15000 });
+      await expect(page.getByText("258 Elm Street")).toHaveCount(0);
+      await expect(page.getByText("Olivia Davis")).toHaveCount(0);
+    });
+  });
 });

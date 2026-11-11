@@ -1,9 +1,10 @@
 import { Alert, FormControl, Grid, InputLabel, MenuItem, Select, TextField, Box } from "@mui/material";
 import React, { memo, useCallback, useMemo } from "react";
 import { Controller, useForm } from "react-hook-form";
+import { useNavigate } from "react-router-dom";
 import { PersonAdd } from "../../components";
 import { ApiHelper, DateHelper, UniqueIdHelper, PersonHelper, Locale, Permissions, UserHelper } from "@churchapps/apphelper";
-import { FormCard, LoadingButton } from "../../components/ui";
+import { FormCard, LoadingButton, TextAction } from "../../components/ui";
 import { useConfirmDelete } from "../../hooks";
 import { FundDonations } from "@churchapps/apphelper/donations";
 import { type DonationInterface, type FundDonationInterface, type FundInterface, type PersonInterface } from "@churchapps/helpers";
@@ -12,6 +13,8 @@ import { AppDatePicker } from "../../components";
 interface Props {
   donationId: string;
   batchId: string;
+  // A new gift starts on the batch date, like the quick entry panel.
+  batchDate?: string;
   funds: FundInterface[];
   updatedFunction: () => void;
   currency?: string;
@@ -33,6 +36,7 @@ export const DonationEdit = memo((props: Props) => {
   const methodDetails = watch("methodDetails");
 
   const { confirm, ConfirmDialogElement } = useConfirmDelete();
+  const navigate = useNavigate();
 
   const handleCancel = useCallback(() => props.updatedFunction(), [props.updatedFunction]);
 
@@ -69,11 +73,29 @@ export const DonationEdit = memo((props: Props) => {
     );
   }, [donation, refunding, handleRefund]);
 
+  const footerActions = useMemo(() => {
+    if (UniqueIdHelper.isMissing(props.donationId)) return refundButton;
+    return (
+      <>
+        <TextAction data-testid="donation-receipt-link" onClick={() => navigate("/donations/receipt/" + props.donationId)}>{Locale.label("donations.donations.receipt")}</TextAction>
+        {refundButton}
+      </>
+    );
+  }, [props.donationId, refundButton, navigate]);
+
   const getDeleteFunction = useCallback(() => (UniqueIdHelper.isMissing(props.donationId) ? undefined : handleDelete), [props.donationId, handleDelete]);
 
   const onValid = async (values: AnyRecord) => {
+    // donation.amount follows the fund rows (handleFundDonationsChange), so a gift with nothing in any fund is caught here.
+    if (!((donation.amount || 0) > 0)) {
+      setSaveError(Locale.label("donations.logGift.amountError", "Enter an amount greater than zero, such as 25.00."));
+      return;
+    }
+    // New gifts are stamped with the church currency; edited gifts keep the currency they were entered in.
+    const currency = (donation.currency || props.currency || "usd").toLowerCase();
     const donationToSave: DonationInterface = {
       ...donation,
+      currency,
       donationDate: values.date ? DateHelper.formatHtml5Date(values.date) : undefined,
       method: values.method,
       methodDetails: values.methodDetails,
@@ -81,15 +103,22 @@ export const DonationEdit = memo((props: Props) => {
     };
     setSaveError("");
     try {
-      const data = await ApiHelper.post("/donations", [donationToSave], "GivingApi");
+      // A new gift carries its fund rows so a Donation trigger sees the funds when it fires.
+      const isNew = UniqueIdHelper.isMissing(donation.id);
+      const newFunds = fundDonations.filter((fd) => fd.amount).map((fd) => ({ fundId: fd.fundId, amount: fd.amount, currency: fd.currency || currency }));
+      const data = await ApiHelper.post("/donations", [isNew ? { ...donationToSave, fundDonations: newFunds } : donationToSave], "GivingApi");
       const id = data[0].id;
       setDonation((prev) => ({ ...prev, id }));
+      if (isNew) {
+        props.updatedFunction();
+        return;
+      }
       const promises = [];
       const fDonations: FundDonationInterface[] = [];
       fundDonations.forEach((fd) => {
         if (fd.amount === undefined || fd.amount === 0) {
           if (!UniqueIdHelper.isMissing(fd.id)) promises.push(ApiHelper.delete("/funddonations/" + fd.id, "GivingApi"));
-        } else fDonations.push({ ...fd, donationId: id });
+        } else fDonations.push({ ...fd, donationId: id, currency: fd.currency || currency });
       });
       if (fDonations.length > 0) promises.push(ApiHelper.post("/funddonations", fDonations, "GivingApi"));
       await Promise.all(promises);
@@ -101,7 +130,7 @@ export const DonationEdit = memo((props: Props) => {
 
   const loadData = useCallback(() => {
     if (UniqueIdHelper.isMissing(props.donationId)) {
-      const initial = { donationDate: DateHelper.formatHtml5Date(new Date()), batchId: props.batchId, amount: 0, method: "Check" };
+      const initial = { donationDate: props.batchDate || DateHelper.formatHtml5Date(new Date()), batchId: props.batchId, amount: 0, method: "Check" };
       setDonation(initial);
       reset({ date: initial.donationDate, method: "Check", methodDetails: "", notes: "" });
       const fd: FundDonationInterface = { amount: 0, fundId: props.funds[0]?.id };
@@ -115,7 +144,7 @@ export const DonationEdit = memo((props: Props) => {
       });
       ApiHelper.get("/funddonations?donationId=" + props.donationId, "GivingApi").then((data: any) => setFundDonations(data));
     }
-  }, [props.donationId, props.batchId, props.funds, reset]);
+  }, [props.donationId, props.batchId, props.batchDate, props.funds, reset]);
 
   const methodDetailsField = useMemo(() => {
     if (method === "Cash") return null;
@@ -168,7 +197,7 @@ export const DonationEdit = memo((props: Props) => {
   return (
     <>
       {ConfirmDialogElement}
-      <FormCard id="donationBox" icon="volunteer_activism" title={Locale.label("common.edit")} onCancel={handleCancel} onDelete={getDeleteFunction()} onSave={handleSubmit(onValid)} footerActions={refundButton} help="docs/b1-admin/donations/">
+      <FormCard id="donationBox" icon="volunteer_activism" title={Locale.label("common.edit")} onCancel={handleCancel} onDelete={getDeleteFunction()} onSave={handleSubmit(onValid)} footerActions={footerActions} help="docs/b1-admin/donations/">
         {refundError && <Alert severity="error" data-testid="refund-error">{refundError}</Alert>}
         {saveError && <Alert severity="error">{saveError}</Alert>}
         <Box>

@@ -1,4 +1,3 @@
-import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Chart } from "react-google-charts";
 import { Box, Grid, Stack, Typography, useTheme } from "@mui/material";
@@ -51,6 +50,13 @@ export const GroupHealthTab = (props: Props) => {
   if (health.isLoading) return <Loading />;
   const data = health.data;
   if (!data) return null;
+
+  // Same order and colors as the Age chart's Female / Male / Unassigned series, whatever order the Api sends.
+  const genderOrder = ["Female", "Male"];
+  const genderLabels: Record<string, string> = { Female: Locale.label("people.demographics.female"), Male: Locale.label("people.demographics.male") };
+  const genderData = [...(data.demographics?.gender || [])]
+    .sort((a, b) => (genderOrder.indexOf(a.name) + 1 || 99) - (genderOrder.indexOf(b.name) + 1 || 99))
+    .map((g) => ({ ...g, name: genderLabels[g.name] || g.name }));
 
   const monthlyData: any[] = [[Locale.label("groups.groupHealth.month"), Locale.label("groups.groupHealth.joined"), Locale.label("groups.groupHealth.left")]];
   data.monthly?.forEach((m) => monthlyData.push([m.month, m.joins, m.leaves]));
@@ -108,7 +114,7 @@ export const GroupHealthTab = (props: Props) => {
           <AgeChart title={Locale.label("people.demographics.age")} data={data.demographics?.ageGroups || []} />
         </Grid>
         <Grid size={{ xs: 12, md: 6 }}>
-          <DonutChart title={Locale.label("people.demographics.gender")} data={data.demographics?.gender || []} />
+          <DonutChart title={Locale.label("people.demographics.gender")} data={genderData} />
         </Grid>
       </Grid>
     </Box>

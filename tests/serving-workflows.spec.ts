@@ -3,7 +3,7 @@ import { request } from "@playwright/test";
 import { servingTest as test, expect } from "./helpers/test-fixtures";
 import { login } from "./helpers/auth";
 import { navigateToServing, navigateToPeople } from "./helpers/navigation";
-import { openKnownPerson, SEED_PEOPLE, recoverFromViteError } from "./helpers/fixtures";
+import { openKnownPerson, SEED_PEOPLE, recoverFromViteError, personAddButton } from "./helpers/fixtures";
 import { STORAGE_STATE_PATH } from "./global-setup";
 
 // ZACCHAEUS is the marker name for rows these tests create.
@@ -357,6 +357,118 @@ test.describe.serial("Serving Management - Workflows", () => {
     await expect(page.locator('[data-testid="workflow-card-TSK00000107"]')).toHaveCount(0, { timeout: 10000 });
   });
 
+  test("remove card closes a card on an outcome-only step and takes it off My Work", async () => {
+    const API_BASE = process.env.API_BASE || "http://localhost:8084";
+    const ctx = await request.newContext();
+    const loginRes = await ctx.post(`${API_BASE}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+    const body = await loginRes.json();
+    const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+    const auth = { headers: { Authorization: "Bearer " + (uc?.jwt as string) } };
+    // A card on a step with outcomes only (no plain Complete), assigned to the demo user.
+    const added = await (await ctx.post(`${API_BASE}/doing/tasks/addToWorkflow`, { ...auth, data: { workflowId: "WFL00000003", stepId: "WFS00000006", associatedWith: { type: "person", id: "PER00000080", label: "Donald Clark" } } })).json();
+    const assigned = await ctx.post(`${API_BASE}/doing/tasks/${added.id}/reassign`, { ...auth, data: { assignedToType: "person", assignedToId: "PER00000082", assignedToLabel: "Demo User" } });
+    expect(assigned.ok()).toBeTruthy();
+
+    await page.goto("/serving/tasks");
+    await recoverFromViteError(page, page.locator('[data-testid="my-cards-list"]'));
+    await expect(page.locator(`[data-testid="my-cards-list"] [data-testid="workflow-card-${added.id}"]`)).toBeVisible({ timeout: 15000 });
+
+    await openBoardById(page, "WFL00000003");
+    await page.locator(`[data-testid="workflow-card-${added.id}"]`).click();
+    const drawer = page.locator('[data-testid="workflow-card-drawer"]');
+    await drawer.waitFor({ state: "visible", timeout: 10000 });
+    await expect(drawer.locator('[data-testid="card-complete-button"]')).toHaveCount(0);
+    await drawer.locator('[data-testid="card-remove-button"]').click();
+    const dialog = page.locator('[data-testid="card-remove-confirm"]');
+    await dialog.waitFor({ state: "visible", timeout: 10000 });
+    await dialog.getByRole("button", { name: "Remove card" }).click();
+    await expect(drawer).toHaveCount(0, { timeout: 10000 });
+    await expect(page.locator(`[data-testid="workflow-card-${added.id}"]`)).toHaveCount(0, { timeout: 10000 });
+
+    const closed = await (await ctx.get(`${API_BASE}/doing/tasks/${added.id}`, auth)).json();
+    expect(closed.status).toBe("Closed");
+    expect(JSON.parse(closed.data || "{}").history.map((h: any) => h.message)).toContain("Removed");
+
+    await page.goto("/serving/tasks");
+    await recoverFromViteError(page, page.locator('[data-testid="my-cards-list"]'));
+    await page.locator('[data-testid="my-cards-list"]').waitFor({ state: "visible", timeout: 15000 });
+    await expect(page.locator(`[data-testid="workflow-card-${added.id}"]`)).toHaveCount(0, { timeout: 10000 });
+    await ctx.dispose();
+  });
+
+  test("a My Work card opens its detail panel with Remove card", async () => {
+    const API_BASE = process.env.API_BASE || "http://localhost:8084";
+    const ctx = await request.newContext();
+    const loginRes = await ctx.post(`${API_BASE}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+    const body = await loginRes.json();
+    const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+    const auth = { headers: { Authorization: "Bearer " + (uc?.jwt as string) } };
+    const added = await (await ctx.post(`${API_BASE}/doing/tasks/addToWorkflow`, { ...auth, data: { workflowId: "WFL00000001", associatedWith: { type: "person", id: "PER00000080", label: "Donald Clark" } } })).json();
+    const assigned = await ctx.post(`${API_BASE}/doing/tasks/${added.id}/reassign`, { ...auth, data: { assignedToType: "person", assignedToId: "PER00000082", assignedToLabel: "Demo User" } });
+    expect(assigned.ok()).toBeTruthy();
+
+    await page.goto("/serving/tasks");
+    await recoverFromViteError(page, page.locator('[data-testid="my-cards-list"]'));
+    const myCard = page.locator(`[data-testid="my-cards-list"] [data-testid="workflow-card-${added.id}"]`);
+    await expect(myCard).toBeVisible({ timeout: 15000 });
+
+    await myCard.click();
+    const drawer = page.locator('[data-testid="workflow-card-drawer"]');
+    await expect(drawer).toBeVisible({ timeout: 10000 });
+    await expect(page).toHaveURL(/\/serving\/tasks$/);
+    await drawer.locator('[data-testid="card-remove-button"]').click();
+    const dialog = page.locator('[data-testid="card-remove-confirm"]');
+    await dialog.getByRole("button", { name: "Remove card" }).click();
+    await expect(drawer).toHaveCount(0, { timeout: 10000 });
+    await expect(myCard).toHaveCount(0, { timeout: 10000 });
+    await ctx.dispose();
+  });
+
+  test("a My Work card on an outcome-only step never offers plain Complete while its routes load", async () => {
+    const API_BASE = process.env.API_BASE || "http://localhost:8084";
+    const ctx = await request.newContext();
+    const loginRes = await ctx.post(`${API_BASE}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+    const body = await loginRes.json();
+    const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+    const auth = { headers: { Authorization: "Bearer " + (uc?.jwt as string) } };
+    const added = await (await ctx.post(`${API_BASE}/doing/tasks/addToWorkflow`, { ...auth, data: { workflowId: "WFL00000003", stepId: "WFS00000006", associatedWith: { type: "person", id: "PER00000080", label: "Donald Clark" } } })).json();
+    const assigned = await ctx.post(`${API_BASE}/doing/tasks/${added.id}/reassign`, { ...auth, data: { assignedToType: "person", assignedToId: "PER00000082", assignedToLabel: "Demo User" } });
+    expect(assigned.ok()).toBeTruthy();
+
+    await page.goto("/serving/tasks");
+    await recoverFromViteError(page, page.locator('[data-testid="my-cards-list"]'));
+    const myCard = page.locator(`[data-testid="my-cards-list"] [data-testid="workflow-card-${added.id}"]`);
+    await expect(myCard).toBeVisible({ timeout: 15000 });
+
+    // Hold the board request so the drawer opens before its routes arrive.
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const boardPattern = "**/doing/tasks/board/**";
+    await page.route(boardPattern, async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      await held;
+      await route.continue();
+    });
+
+    await myCard.click();
+    const drawer = page.locator('[data-testid="workflow-card-drawer"]');
+    await expect(drawer).toBeVisible({ timeout: 10000 });
+    await expect(drawer.locator('[data-testid="card-remove-button"]')).toBeVisible();
+    await expect(drawer.locator('[data-testid="card-complete-button"]')).toHaveCount(0);
+
+    release();
+    await expect(drawer.locator('[data-testid^="card-outcome-"]').first()).toBeVisible({ timeout: 10000 });
+    await expect(drawer.locator('[data-testid="card-complete-button"]')).toHaveCount(0);
+    await page.unroute(boardPattern);
+
+    await drawer.locator('[data-testid="card-remove-button"]').click();
+    const dialog = page.locator('[data-testid="card-remove-confirm"]');
+    await dialog.getByRole("button", { name: "Remove card" }).click();
+    await expect(drawer).toHaveCount(0, { timeout: 10000 });
+    await expect(myCard).toHaveCount(0, { timeout: 10000 });
+    await ctx.dispose();
+  });
+
   test("configure a new outcome from the step editor", async () => {
     await openBoardById(page, "WFL00000003");
     await page.locator('[data-testid="edit-step-WFS00000007"]').click();
@@ -541,6 +653,60 @@ test.describe.serial("Serving Management - Workflows", () => {
     await ctx.dispose();
   });
 
+  test("a step's select-all checkbox selects every card in it for the bulk bar", async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    const { wf } = await buildActionWorkflow(ctx, auth, []);
+    const steps = await (await ctx.get(`${API_BASE}/doing/workflowSteps/workflow/${wf.id}`, auth)).json();
+    const greet = steps.find((s: any) => s.name === "Greet");
+    for (const p of [{ id: "PER00000001", label: "John Smith" }, { id: "PER00000005", label: "Patricia Brown" }, { id: "PER00000006", label: "Robert Johnson" }]) {
+      const res = await ctx.post(`${API_BASE}/doing/tasks/addToWorkflow`, { ...auth, data: { workflowId: wf.id, stepId: greet.id, associatedWith: { type: "person", ...p } } });
+      expect(res.status()).toBe(200);
+    }
+
+    try {
+      await openBoardById(page, wf.id);
+      const column = page.locator(`[data-testid="workflow-column-${greet.id}"]`);
+      await expect(column.locator('[data-testid^="workflow-card-"]')).toHaveCount(3, { timeout: 10000 });
+      const selectAll = page.locator(`[data-testid="select-all-${greet.id}"]`).getByRole("checkbox");
+      await selectAll.check();
+      await expect(page.locator('[data-testid="bulk-action-bar"]')).toContainText("3 selected", { timeout: 10000 });
+      await expect(column.locator('[data-testid^="card-select-"]').getByRole("checkbox", { checked: false })).toHaveCount(0);
+
+      // Unticking one card leaves the header partly checked; ticking it again clears the whole step.
+      await column.locator('[data-testid^="card-select-"]').first().getByRole("checkbox").uncheck();
+      await expect(page.locator('[data-testid="bulk-action-bar"]')).toContainText("2 selected");
+      await expect(page.locator(`[data-testid="select-all-${greet.id}"]`)).toHaveClass(/MuiCheckbox-indeterminate/);
+      await selectAll.check();
+      await expect(page.locator('[data-testid="bulk-action-bar"]')).toContainText("3 selected");
+      await selectAll.uncheck();
+      await expect(page.locator('[data-testid="bulk-action-bar"]')).toHaveCount(0);
+    } finally {
+      await ctx.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth);
+      await ctx.dispose();
+    }
+  });
+
+  test("a card's activity shows when each entry happened", async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    const { wf, auto } = await buildActionWorkflow(ctx, auth, [{ actionType: "addNote", config: { note: "Zacchaeus dated note" } }]);
+    const added = await ctx.post(`${API_BASE}/doing/tasks/addToWorkflow`, { ...auth, data: { workflowId: wf.id, stepId: auto.id, associatedWith: { type: "person", id: "PER00000001", label: "John Smith" } } });
+    const card = await added.json();
+
+    try {
+      await openBoardById(page, wf.id);
+      await page.locator(`[data-testid="workflow-card-${card.id}"]`).click();
+      await page.locator('[data-testid="workflow-card-drawer"]').waitFor({ state: "visible", timeout: 10000 });
+      const entry = page.locator('[data-testid="history-entry-0"]');
+      await expect(entry).toContainText("Note: Zacchaeus dated note");
+      await expect(entry.locator('[data-testid="history-date-0"]')).toHaveText(/\d{1,2}:\d{2}/);
+    } finally {
+      await ctx.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth);
+      await ctx.dispose();
+    }
+  });
+
   test("every step renders as a column with an automated-actions badge (no connector)", async () => {
     const ctx = await request.newContext();
     const auth = await apiAuth(ctx);
@@ -573,7 +739,7 @@ test.describe.serial("Serving Management - Workflows", () => {
     await message.fill("Hi {{firstName}}, welcome to {{churchName}}!");
     await expect(page.getByText("44/1600")).toBeVisible();
     const saved = page.waitForResponse((r) => r.url().includes("/workflowStepActions") && r.request().method() === "POST");
-    await page.locator('[data-testid="action-save-0"]').click();
+    await page.locator('[data-testid="step-save-button"]').click();
     expect((await saved).status()).toBe(200);
 
     await openBoardById(page, wf.id);
@@ -585,5 +751,266 @@ test.describe.serial("Serving Management - Workflows", () => {
     const auth2 = await apiAuth(cleanup);
     await cleanup.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth2);
     await cleanup.dispose();
+  });
+
+  test("clicking a merge field chip inserts it into the Send Text message", async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    const { wf, auto } = await buildActionWorkflow(ctx, auth, []);
+    await ctx.dispose();
+
+    await openBoardById(page, wf.id);
+    await page.locator(`[data-testid="edit-step-${auto.id}"]`).click();
+    await page.locator('[data-testid="add-action-button"]').click();
+    await page.locator('[data-testid="action-type-0"]').click();
+    await page.getByRole("option", { name: "Send Text" }).click();
+    const message = page.locator('[data-testid="action-text-message-0"] textarea').first();
+    await message.fill("Hi ");
+    const chips = page.locator('[data-testid="action-text-merge-fields-0"]');
+    await chips.getByText("First Name", { exact: true }).click();
+    await expect(message).toHaveValue("Hi {{firstName}}");
+    await page.keyboard.type(", welcome to ");
+    await chips.getByText("Church Name", { exact: true }).click();
+    await expect(message).toHaveValue("Hi {{firstName}}, welcome to {{churchName}}");
+
+    const cleanup = await request.newContext();
+    const auth2 = await apiAuth(cleanup);
+    await cleanup.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth2);
+    await cleanup.dispose();
+  });
+
+  // ChurchAppsSupport#1486: a workflow text can thank a donor for the gift that started it.
+  test("the Send Text action offers the gift merge fields", async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    const { wf, auto } = await buildActionWorkflow(ctx, auth, []);
+    await ctx.dispose();
+
+    await openBoardById(page, wf.id);
+    await page.locator(`[data-testid="edit-step-${auto.id}"]`).click();
+    await page.locator('[data-testid="add-action-button"]').click();
+    await page.locator('[data-testid="action-type-0"]').click();
+    await page.getByRole("option", { name: "Send Text" }).click();
+    const message = page.locator('[data-testid="action-text-message-0"] textarea').first();
+    await message.fill("Thanks for ");
+    const chips = page.locator('[data-testid="action-text-merge-fields-0"]');
+    await chips.getByText("Amount", { exact: true }).click();
+    await page.keyboard.type(" on ");
+    await chips.getByText("Gift Date", { exact: true }).click();
+    await expect(message).toHaveValue("Thanks for {{amount}} on {{giftDate}}");
+    await expect(chips.getByText("Receipt", { exact: true })).toBeVisible();
+    await expect(page.locator('[data-testid="action-text-gift-hint-0"]')).toHaveText("Amount, Gift Date, Fund and Receipt fill in only when the workflow was started by a Donation trigger.");
+
+    const cleanup = await request.newContext();
+    const auth2 = await apiAuth(cleanup);
+    await cleanup.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth2);
+    await cleanup.dispose();
+  });
+
+  // ChurchAppsSupport#1440: the Send Text action can start from a saved text template, like Mass Texting.
+  test("a Send Text action can start from a text template and stay editable", async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    const name = "ZACCHAEUS Text Template " + Date.now().toString().slice(-6);
+    const body = "Hi {{firstName}}, glad you visited {{churchName}}.";
+    const [tpl] = await (await ctx.post(`${API_BASE}/messaging/emailTemplates`, { ...auth, data: [{ churchId: "CHU00000001", name, subject: "", htmlContent: body, category: "Text" }] })).json();
+    const { wf, auto } = await buildActionWorkflow(ctx, auth, []);
+    try {
+      await openBoardById(page, wf.id);
+      await page.locator(`[data-testid="edit-step-${auto.id}"]`).click();
+      await page.locator('[data-testid="add-action-button"]').click();
+      await page.locator('[data-testid="action-type-0"]').click();
+      await page.getByRole("option", { name: "Send Text" }).click();
+      await page.locator('[data-testid="action-text-template-0"]').click();
+      await page.getByRole("option", { name }).click();
+      const message = page.locator('[data-testid="action-text-message-0"] textarea').first();
+      await expect(message).toHaveValue(body);
+      await message.press("End");
+      await page.keyboard.type(" See you Sunday!");
+      await expect(message).toHaveValue(body + " See you Sunday!");
+      const saved = page.waitForResponse((r) => r.url().includes("/workflowStepActions") && r.request().method() === "POST");
+      await page.locator('[data-testid="step-save-button"]').click();
+      expect((await saved).status()).toBe(200);
+      const actions = await (await ctx.get(`${API_BASE}/doing/workflowStepActions/step/${auto.id}`, auth)).json();
+      expect(JSON.parse(actions[0].config)).toEqual({ message: body + " See you Sunday!" });
+    } finally {
+      await ctx.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth);
+      await ctx.delete(`${API_BASE}/messaging/emailTemplates/CHU00000001/${tpl.id}`, auth);
+      await ctx.dispose();
+    }
+  });
+
+  // Opens the step editor for the Auto step of a fresh action workflow.
+  async function openAutoStepEditor(ctx: any, auth: any) {
+    const { wf, auto } = await buildActionWorkflow(ctx, auth, []);
+    await openBoardById(page, wf.id);
+    await page.locator(`[data-testid="edit-step-${auto.id}"]`).click();
+    await expect(page.locator('[data-testid="add-action-button"]')).toBeVisible({ timeout: 10000 });
+    return { wf, auto };
+  }
+
+  async function addSendEmailAction() {
+    await page.locator('[data-testid="add-action-button"]').click();
+    await page.locator('[data-testid="action-type-0"]').click();
+    await page.getByRole("option", { name: "Send Email" }).click();
+  }
+
+  test("the step's Save also saves a newly added action", async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    const { wf, auto } = await openAutoStepEditor(ctx, auth);
+    await page.locator('[data-testid="add-action-button"]').click();
+    await page.locator('[data-testid="action-days-0"] input').fill("3");
+    await page.locator('[data-testid="step-save-button"]').click();
+    await expect(page.locator('[data-testid="step-save-button"]')).toHaveCount(0, { timeout: 10000 });
+
+    const actions = await (await ctx.get(`${API_BASE}/doing/workflowStepActions/step/${auto.id}`, auth)).json();
+    expect(actions.map((a: any) => a.actionType)).toEqual(["delay"]);
+    expect(JSON.parse(actions[0].config).days).toBe(3);
+    await ctx.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth);
+    await ctx.dispose();
+  });
+
+  test("configure a Notify Person action with a staff person and message", async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    const { wf, auto } = await openAutoStepEditor(ctx, auth);
+    await page.locator('[data-testid="add-action-button"]').click();
+    await page.locator('[data-testid="action-type-0"]').click();
+    await page.getByRole("option", { name: "Notify Person" }).click();
+    await expect(page.getByText("They get an email and a B1 notification")).toBeVisible();
+    await page.locator('[data-testid="action-notify-pick-0"]').click();
+    const dialog = page.getByRole("dialog").filter({ has: page.locator('input[name="personAddText"]') });
+    await dialog.locator('input[name="personAddText"]').fill(SEED_PEOPLE.DONALD);
+    await dialog.locator('input[name="personAddText"]').press("Enter");
+    await personAddButton(dialog, SEED_PEOPLE.DONALD).click();
+    await expect(page.locator('[data-testid="action-notify-person-0"]')).toHaveText(/^(Mr\. )?Donald Clark$/, { timeout: 10000 });
+    await page.locator('[data-testid="action-notify-message-0"] textarea').first().fill("Lapsed giver, please call");
+    await page.locator('[data-testid="step-save-button"]').click();
+    await expect(page.locator('[data-testid="step-save-button"]')).toHaveCount(0, { timeout: 10000 });
+
+    const actions = await (await ctx.get(`${API_BASE}/doing/workflowStepActions/step/${auto.id}`, auth)).json();
+    expect(actions.map((a: any) => a.actionType)).toEqual(["notifyPerson"]);
+    const config = JSON.parse(actions[0].config);
+    expect(config.personLabel).toMatch(/^(Mr\. )?Donald Clark$/);
+    expect(config.personId).toBeTruthy();
+    expect(config.message).toBe("Lapsed giver, please call");
+
+    const added = await ctx.post(`${API_BASE}/doing/tasks/addToWorkflow`, { ...auth, data: { workflowId: wf.id, stepId: auto.id, associatedWith: { type: "person", id: "PER00000001", label: "John Smith" } } });
+    expect(added.status()).toBe(200);
+    const card = await added.json();
+    expect(JSON.parse(card.data || "{}").history?.some((h: any) => /^Notified (Mr\. )?Donald Clark$/.test(h.message))).toBeTruthy();
+
+    await ctx.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth);
+    await ctx.dispose();
+  });
+
+  test("a Record Attendance action marks the card's person present for the service under way", async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    // A group whose service time is always under way: open all week from Sunday 00:00.
+    const group = (await (await ctx.post(`${API_BASE}/membership/groups`, { ...auth, data: [{ name: "Zacchaeus Night Service", categoryName: "Worship", trackAttendance: true }] })).json())[0];
+    const service = (await (await ctx.get(`${API_BASE}/attendance/services`, auth)).json())[0];
+    const serviceTime = (await (await ctx.post(`${API_BASE}/attendance/servicetimes`, { ...auth, data: [{ serviceId: service.id, name: "Zacchaeus 6:30pm", dayOfWeek: 0, startTime: "00:00", endTime: "23:59", checkinCloseMinutes: 7 * 24 * 60 }] })).json())[0];
+    const link = (await (await ctx.post(`${API_BASE}/attendance/groupservicetimes`, { ...auth, data: [{ groupId: group.id, serviceTimeId: serviceTime.id }] })).json())[0];
+
+    const { wf, auto } = await openAutoStepEditor(ctx, auth);
+    await page.locator('[data-testid="add-action-button"]').click();
+    await page.locator('[data-testid="action-type-0"]').click();
+    await page.getByRole("option", { name: "Record Attendance" }).click();
+    await expect(page.getByText("Marks the person present for this group's service time that is in progress")).toBeVisible();
+    await page.locator('[data-testid="action-group-pick-0"]').click();
+    const dialog = page.getByRole("dialog").filter({ hasText: "Select a Person or Group" });
+    await dialog.getByRole("tab", { name: "Group" }).click();
+    await dialog.locator(`[data-testid="select-group-button-${group.id}"]`).click();
+    await expect(page.getByText("Zacchaeus Night Service")).toBeVisible({ timeout: 10000 });
+    await page.locator('[data-testid="step-save-button"]').click();
+    await expect(page.locator('[data-testid="step-save-button"]')).toHaveCount(0, { timeout: 10000 });
+
+    const actions = await (await ctx.get(`${API_BASE}/doing/workflowStepActions/step/${auto.id}`, auth)).json();
+    expect(actions.map((a: any) => a.actionType)).toEqual(["recordAttendance"]);
+    expect(JSON.parse(actions[0].config)).toMatchObject({ groupId: group.id, groupLabel: "Zacchaeus Night Service" });
+
+    const added = await ctx.post(`${API_BASE}/doing/tasks/addToWorkflow`, { ...auth, data: { workflowId: wf.id, stepId: auto.id, associatedWith: { type: "person", id: "PER00000001", label: "John Smith" } } });
+    expect(added.status()).toBe(200);
+    const card = await added.json();
+    expect(JSON.parse(card.data || "{}").history?.some((h: any) => h.message === "Attendance recorded: Zacchaeus Night Service")).toBeTruthy();
+    const visits = await (await ctx.get(`${API_BASE}/attendance/visits?personId=PER00000001`, auth)).json();
+    const visit = visits.find((v: any) => v.groupId === group.id && v.serviceId === service.id);
+    expect(visit).toBeTruthy();
+
+    await ctx.delete(`${API_BASE}/attendance/visits/${visit.id}`, auth);
+    await ctx.delete(`${API_BASE}/attendance/groupservicetimes/${link.id}`, auth);
+    await ctx.delete(`${API_BASE}/attendance/servicetimes/${serviceTime.id}`, auth);
+    await ctx.delete(`${API_BASE}/membership/groups/${group.id}`, auth);
+    await ctx.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth);
+    await ctx.dispose();
+  });
+
+  test("the Send Email action warns when the church's email isn't approved", async () => {
+    await page.route("**/emailTemplates/sendStatus", (route) => route.fulfill({ json: { approved: false, paused: false, remaining: 0, requested: false } }));
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    try {
+      const { wf } = await openAutoStepEditor(ctx, auth);
+      await addSendEmailAction();
+      await expect(page.locator('[data-testid="action-email-not-approved-0"]')).toBeVisible({ timeout: 10000 });
+      await ctx.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth);
+    } finally {
+      await page.unroute("**/emailTemplates/sendStatus");
+      await ctx.dispose();
+    }
+  });
+
+  test("the Send Email action warns when the church's email is paused", async () => {
+    await page.route("**/emailTemplates/sendStatus", (route) => route.fulfill({ json: { approved: true, paused: true, remaining: 0, requested: false } }));
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    try {
+      const { wf } = await openAutoStepEditor(ctx, auth);
+      await addSendEmailAction();
+      await expect(page.locator('[data-testid="action-email-paused-0"]')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('[data-testid="action-email-not-approved-0"]')).toHaveCount(0);
+      await ctx.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth);
+    } finally {
+      await page.unroute("**/emailTemplates/sendStatus");
+      await ctx.dispose();
+    }
+  });
+
+  test("creating from a template shows a busy state so it can't be picked twice", async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    await page.route("**/workflows/fromTemplate", async (route) => { await held; await route.continue(); });
+    try {
+      await gotoWorkflows(page);
+      await page.locator('[data-testid="add-workflow-button"]').click();
+      await page.locator('[data-testid="add-workflow-template-newVisitor"]').click();
+      await expect(page.locator('[data-testid="add-workflow-button"]')).toBeDisabled();
+      release();
+      await expect(page).toHaveURL(/\/serving\/tasks\/workflows\/[\w-]+$/, { timeout: 15000 });
+    } finally {
+      release();
+      await page.unroute("**/workflows/fromTemplate");
+    }
+    const id = page.url().split("/").pop();
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    await ctx.delete(`${API_BASE}/doing/workflows/${id}`, auth);
+    await ctx.dispose();
+  });
+
+  test("a failed template pick shows an error and re-enables Add Workflow", async () => {
+    await page.route("**/workflows/fromTemplate", (route) => (route.request().method() === "POST" ? route.fulfill({ status: 500, json: { error: "boom" } }) : route.continue()));
+    try {
+      await gotoWorkflows(page);
+      await page.locator('[data-testid="add-workflow-button"]').click();
+      await page.locator('[data-testid="add-workflow-template-newVisitor"]').click();
+      await expect(page.locator('[data-testid="workflow-template-error"]')).toBeVisible({ timeout: 10000 });
+      await expect(page).toHaveURL(/\/serving\/tasks\/workflows$/);
+      await expect(page.locator('[data-testid="add-workflow-button"]')).toBeEnabled();
+    } finally {
+      await page.unroute("**/workflows/fromTemplate");
+    }
   });
 });

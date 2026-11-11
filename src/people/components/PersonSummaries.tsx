@@ -5,7 +5,7 @@ import { Box, Link, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typ
 import { CheckCircle as CheckCircleIcon, RadioButtonUnchecked as EmptyCircleIcon } from "@mui/icons-material";
 import { type AttendanceRecordInterface, type DonationInterface, type GroupInterface, type GroupMemberInterface, type MessageInterface, type PersonInterface } from "@churchapps/helpers";
 import { ArrayHelper, ConversationStore, CurrencyHelper, DateHelper, Loading, Locale, UniqueIdHelper, filterVisibleMessages } from "@churchapps/apphelper";
-import { RecordHeading, TextAction, VerbRow, numericCellSx, tableScrollSx } from "../../components/ui";
+import { RecordHeading, StatusBadge, TextAction, VerbRow, numericCellSx, tableScrollSx } from "../../components/ui";
 import { type PersonFormOption } from "./PersonForms";
 
 const WEEKS = 13;
@@ -144,7 +144,7 @@ export const PersonAttendanceSummary: React.FC<AttendanceProps> = ({ personId, o
                 const group = ArrayHelper.getOne(groups.data || [], "id", r.groupId);
                 const service = [r.service?.name, r.serviceTime?.name].filter(Boolean).join(" · ");
                 return (
-                  <TableRow key={r.id || i}>
+                  <TableRow key={i}>
                     <TableCell>{pretty(day)}</TableCell>
                     <TableCell>{service || "—"}</TableCell>
                     <TableCell align="right">{group ? <Link component={RouterLink} to={"/groups/" + group.id}>{group.name}</Link> : "—"}</TableCell>
@@ -235,7 +235,7 @@ export const PersonGivingSummary: React.FC<GivingProps> = ({ personId, household
       <Stack spacing={1.5}>
         <Typography variant="body1" color="text.secondary">
           <Box component="span" sx={{ color: "text.primary", fontVariantNumeric: "tabular-nums" }}>{money(total)}</Box>
-          {" " + Locale.label("people.personRecord.givingYear", "in {year} · {count} gifts").replace("{year}", String(year)).replace("{count}", String(yearRows.length))}
+          {" " + (yearRows.length === 1 ? Locale.label("people.personRecord.givingYearSingular", "in {year} · {count} gift") : Locale.label("people.personRecord.givingYear", "in {year} · {count} gifts")).replace("{year}", String(year)).replace("{count}", String(yearRows.length))}
           {householdNote}
           {yearRows.length > shown.length && " · " + Locale.label("people.personRecord.showingLatest", "showing latest {count}").replace("{count}", String(shown.length))}
         </Typography>
@@ -276,7 +276,8 @@ export const PersonGivingSummary: React.FC<GivingProps> = ({ personId, household
 };
 
 export const PersonGroupsSummary: React.FC<{ personId: string }> = ({ personId }) => {
-  const groupMembers = useQuery<GroupMemberInterface[]>({
+  // joinDate is returned by the Api but not on the published GroupMemberInterface yet.
+  const groupMembers = useQuery<(GroupMemberInterface & { joinDate?: Date | string })[]>({
     queryKey: ["/groupmembers?personId=" + personId, "MembershipApi"],
     enabled: !UniqueIdHelper.isMissing(personId)
   });
@@ -300,6 +301,11 @@ export const PersonGroupsSummary: React.FC<{ personId: string }> = ({ personId }
               {gm.leader && <Box component="span" sx={{ fontWeight: 400, opacity: 0.75 }}>{Locale.label("people.groups.leader")}</Box>}
             </Link>
             {gm.group?.categoryName && <Box component="span" sx={{ ml: 1, color: "text.secondary", typography: "body2" }}>{gm.group.categoryName}</Box>}
+            {gm.joinDate && (
+              <Box component="span" sx={{ ml: 1, color: "text.secondary", typography: "body2" }} data-testid="group-joined-date">
+                {Locale.label("people.groups.joined").replace("{date}", DateHelper.prettyDate(new Date(gm.joinDate)))}
+              </Box>
+            )}
           </li>
         ))}
       </Box>
@@ -361,7 +367,7 @@ export const PersonNotesSummary: React.FC<NotesProps> = ({ conversationId, onVie
           {latest.content}
         </Typography>
         <VerbRow>
-          <span>{Locale.label("people.personRecord.noteCount", "{count} notes").replace("{count}", String(visible.length))}</span>
+          <span>{Locale.label(visible.length === 1 ? "people.personRecord.noteCountSingular" : "people.personRecord.noteCount", visible.length === 1 ? "{count} note" : "{count} notes").replace("{count}", String(visible.length))}</span>
           {allVerb}
         </VerbRow>
       </Stack>
@@ -400,4 +406,120 @@ export const PersonFormsSummary: React.FC<FormsProps> = ({ person, forms, onOpen
       </Stack>
     </Section>
   );
+};
+
+interface RequestBooking { status?: string; requestedDate?: string; roomName?: string; resourceName?: string }
+interface RequestEvent { id?: string; title?: string; start?: string; approvalStatus?: string; bookings?: RequestBooking[] }
+interface PersonRegistration { id?: string; status?: string; registeredDate?: string; event?: { title?: string; start?: string }; members?: unknown[] }
+type RequestTone = "success" | "warning" | "danger" | "neutral";
+interface RequestRow { key: string; day: Date | null; title: string; detail: string; status: string; tone: RequestTone }
+
+const requestStatus = (status?: string): [string, RequestTone] => {
+  if (status === "approved") return [Locale.label("calendars.approvals.approved"), "success"];
+  if (status === "rejected") return [Locale.label("calendars.approvals.rejected"), "danger"];
+  return [Locale.label("calendars.approvals.pending"), "warning"];
+};
+
+const registrationStatus = (status?: string): [string, RequestTone] => {
+  if (status === "cancelled") return [Locale.label("people.personRecord.cancelled", "Cancelled"), "danger"];
+  if (status === "pending") return [Locale.label("calendars.approvals.pending"), "warning"];
+  if (status === "waitlisted") return [Locale.label("people.personRecord.waitlisted", "Waitlisted"), "neutral"];
+  return [Locale.label("people.personRecord.registered", "Registered"), "success"];
+};
+
+interface RequestsProps {
+  personId: string;
+  canViewRequests: boolean;
+  canViewRegistrations: boolean;
+  onViewAll?: () => void;
+}
+
+// #1476: the staff side of the member's "Requests & registrations" on the Me screen.
+// Without onViewAll it is the full list ("All requests").
+export const PersonRequestsSummary: React.FC<RequestsProps> = ({ personId, canViewRequests, canViewRegistrations, onViewAll }) => {
+  const hasId = !UniqueIdHelper.isMissing(personId);
+  const requests = useQuery<RequestEvent[]>({ queryKey: ["/events/requests/person/" + personId, "ContentApi"], enabled: hasId && canViewRequests });
+  const registrations = useQuery<PersonRegistration[]>({ queryKey: ["/registrations/person/" + personId, "ContentApi"], enabled: hasId && canViewRegistrations });
+  const title = Locale.label("people.personNavigation.requests", "Requests & registrations");
+
+  const rows = useMemo(() => {
+    const list: RequestRow[] = [];
+    (canViewRequests ? requests.data || [] : []).forEach((e, i) => {
+      const places = (e.bookings || []).map((b) => b.roomName || b.resourceName).filter(Boolean).join(", ");
+      const [status, tone] = requestStatus(e.approvalStatus);
+      list.push({
+        key: "req-" + (e.id || i),
+        day: toDay(e.bookings?.[0]?.requestedDate || e.start),
+        title: e.title || "—",
+        detail: Locale.label("people.personRecord.eventRequest", "Event request") + (places ? " · " + places : ""),
+        status,
+        tone
+      });
+    });
+    (canViewRegistrations ? registrations.data || [] : []).forEach((r, i) => {
+      const [status, tone] = registrationStatus(r.status);
+      const count = r.members?.length || 0;
+      list.push({
+        key: "reg-" + (r.id || i),
+        day: toDay(r.registeredDate || r.event?.start),
+        title: r.event?.title || "—",
+        detail: count > 1
+          ? Locale.label("people.personRecord.registrationPeople", "Registration · {count} people").replace("{count}", String(count))
+          : Locale.label("people.personRecord.registration", "Registration"),
+        status,
+        tone
+      });
+    });
+    return list.sort((a, b) => (b.day?.getTime() || 0) - (a.day?.getTime() || 0));
+  }, [canViewRequests, canViewRegistrations, requests.data, registrations.data]);
+
+  const isLoading = (canViewRequests && requests.isLoading) || (canViewRegistrations && registrations.isLoading);
+  const isError = (canViewRequests && requests.isError) || (canViewRegistrations && registrations.isError);
+  const refetch = () => {
+    if (canViewRequests) requests.refetch();
+    if (canViewRegistrations) registrations.refetch();
+  };
+  const allVerb = onViewAll ? <ViewAll label={Locale.label("people.personRecord.allRequests", "All requests")} onClick={onViewAll} testId="person-requests-all" /> : null;
+
+  const body = () => {
+    if (isLoading) return <Loading size="sm" />;
+    if (isError) return <LoadError what={title.toLowerCase()} onRetry={refetch} />;
+    if (rows.length === 0) return <Muted>{Locale.label("people.personRecord.noRequests", "No requests or registrations yet.")}</Muted>;
+    const shown = onViewAll ? rows.slice(0, 5) : rows;
+    return (
+      <Stack spacing={1.5}>
+        <Box sx={tableScrollSx} role="region" aria-label={title} tabIndex={0}>
+          <Table size="small" sx={plainTableSx} data-testid="person-requests-table">
+            <TableHead>
+              <TableRow>
+                <TableCell>{Locale.label("donation.page.date")}</TableCell>
+                <TableCell>{Locale.label("calendars.approvals.event")}</TableCell>
+                <TableCell align="right">{Locale.label("people.personRecord.status", "Status")}</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {shown.map((row) => (
+                <TableRow key={row.key}>
+                  <TableCell>{row.day ? pretty(row.day) : "—"}</TableCell>
+                  <TableCell>
+                    <Typography variant="body2">{row.title}</Typography>
+                    <Typography variant="body2" color="text.secondary">{row.detail}</Typography>
+                  </TableCell>
+                  <TableCell align="right"><StatusBadge tone={row.tone}>{row.status}</StatusBadge></TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Box>
+        {allVerb && (
+          <VerbRow>
+            {rows.length > shown.length && <span>{Locale.label("people.personRecord.showingLatest", "showing latest {count}").replace("{count}", String(shown.length))}</span>}
+            {allVerb}
+          </VerbRow>
+        )}
+      </Stack>
+    );
+  };
+
+  return <Section id="person-requests-heading" title={title} testId="person-requests-section">{body()}</Section>;
 };

@@ -1,7 +1,7 @@
 import React from "react";
 import { CurrencyHelper, Loading, Locale, UserHelper, Permissions } from "@churchapps/apphelper";
 import { type FundInterface, type PersonInterface } from "@churchapps/helpers";
-import { useParams, Link } from "react-router-dom";
+import { useNavigate, useParams, Link } from "react-router-dom";
 import { Box, LinearProgress, Link as MuiLink, Table, TableBody, TableCell, TableRow, Typography } from "@mui/material";
 import { Add as AddIcon, Edit as EditIcon, Flag as CampaignIcon } from "@mui/icons-material";
 import { useQuery } from "@tanstack/react-query";
@@ -31,6 +31,7 @@ const pledgeStatusLabel = (status: PledgeStatus | undefined) => {
 
 export const CampaignPage = () => {
   const params = useParams();
+  const navigate = useNavigate();
   const [editMode, setEditMode] = React.useState<"none" | "campaign" | "pledge">("none");
   const [editPledge, setEditPledge] = React.useState<PledgeInterface | null>(null);
   const [sortBy, setSortBy] = React.useState<string>("");
@@ -41,7 +42,7 @@ export const CampaignPage = () => {
   const funds = useQuery<FundInterface[]>({ queryKey: ["/funds", "GivingApi"], placeholderData: [] });
 
   const personIds = React.useMemo(() => {
-    const ids = (progress.data?.rows || []).map((r) => r.personId).filter((id) => id);
+    const ids = (progress.data?.rows || []).map((r) => r.personId).filter((id): id is string => !!id);
     return Array.from(new Set(ids)).sort();
   }, [progress.data]);
 
@@ -85,15 +86,15 @@ export const CampaignPage = () => {
 
   const sortedRows = React.useMemo(() => {
     const result = [...(progress.data?.rows || [])];
-    if (sortBy === "person") {
-      const dir = sortDirection === "asc" ? 1 : -1;
-      result.sort((a, b) => (peopleNames[a.personId || ""] || "").toUpperCase().localeCompare((peopleNames[b.personId || ""] || "").toUpperCase()) * dir);
-    } else if (sortBy) {
-      const dir = sortDirection === "asc" ? 1 : -1;
+    const rank = new Map((people.data || []).map((p, i) => [p.id, i]));
+    const dir = sortDirection === "asc" ? 1 : -1;
+    if (!sortBy || sortBy === "person") {
+      result.sort((a, b) => ((rank.get(a.personId) ?? Infinity) - (rank.get(b.personId) ?? Infinity)) * dir);
+    } else {
       result.sort((a: any, b: any) => ((a[sortBy] || 0) - (b[sortBy] || 0)) * dir);
     }
     return result;
-  }, [progress.data, sortBy, sortDirection, peopleNames]);
+  }, [progress.data, sortBy, sortDirection, people.data]);
 
   const handleSort = (key: string) => {
     setSortDirection(sortBy === key && sortDirection === "asc" ? "desc" : "asc");
@@ -101,7 +102,7 @@ export const CampaignPage = () => {
   };
 
   const getEditContent = () => {
-    if (editMode === "campaign") return <CampaignEdit campaign={campaign as CampaignInterface} funds={funds.data || []} updatedFunction={updated} />;
+    if (editMode === "campaign") return <CampaignEdit campaign={campaign as CampaignInterface} funds={funds.data || []} updatedFunction={updated} deletedFunction={() => navigate("/donations/campaigns")} />;
     if (editMode === "pledge") return <PledgeEdit campaignId={params.id || ""} pledge={editPledge as PledgeInterface} personName={editPledge?.personId ? peopleNames[editPledge.personId] : undefined} updatedFunction={updated} />;
     return null;
   };
@@ -175,7 +176,7 @@ export const CampaignPage = () => {
     );
   };
 
-  const getExportData = () => (progress.data?.rows || []).map((r) => ({
+  const getExportData = () => sortedRows.map((r) => ({
     donor: r.personId ? peopleNames[r.personId] || r.personId : Locale.label("donations.campaignPage.anon"),
     pledged: r.pledgedAmount || 0,
     given: r.givenAmount || 0,
@@ -186,6 +187,7 @@ export const CampaignPage = () => {
 
   const breadcrumbItems: BreadcrumbItem[] = [
     { label: Locale.label("components.wrapper.don"), path: "/donations" },
+    { label: Locale.label("donations.campaignsPage.campaigns"), path: "/donations/campaigns" },
     { label: campaign?.name || "" }
   ];
 

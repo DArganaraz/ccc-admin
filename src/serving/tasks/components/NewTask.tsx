@@ -1,7 +1,7 @@
 import { Grid, TextField, Typography, Stack, Button, InputAdornment } from "@mui/material";
 import { Surface } from "../../../components/ui";
 import React from "react";
-import { ApiHelper, ArrayHelper, type ConversationInterface, ErrorMessages, Locale, type MessageInterface, UserHelper } from "@churchapps/apphelper";
+import { ApiHelper, ArrayHelper, type ConversationInterface, DateHelper, ErrorMessages, Locale, type MessageInterface, UserHelper } from "@churchapps/apphelper";
 import { type TaskInterface } from "@churchapps/helpers";
 import { ContentPicker } from "./ContentPicker";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -20,10 +20,7 @@ export const NewTask = (props: Props) => {
     createdByType: "person",
     createdById: UserHelper.person?.id,
     createdByLabel: UserHelper.person?.name?.display,
-    dateCreated: new Date(),
-    associatedWithType: "person",
-    associatedWithId: UserHelper.person?.id,
-    associatedWithLabel: UserHelper.person?.name?.display
+    dateCreated: new Date()
   };
   const [task, setTask] = React.useState<TaskInterface>(initialData);
   const [message, setMessage] = React.useState<MessageInterface>({});
@@ -68,7 +65,6 @@ export const NewTask = (props: Props) => {
 
   const validate = () => {
     const result = [];
-    if (!task.associatedWithId) result.push(Locale.label("tasks.newTask.associatePers"));
     if (!task.assignedToId) result.push(Locale.label("tasks.newTask.assignPers"));
     if (!task.title?.trim()) result.push(Locale.label("tasks.newTask.titleTask"));
     setErrors(result);
@@ -109,6 +105,9 @@ export const NewTask = (props: Props) => {
         t.title = val;
         setTask(t);
         break;
+      case "dueDate":
+        setTask({ ...task, dueDate: val ? new Date(val + "T12:00") : undefined });
+        break;
       case "note":
         const m = { ...message };
         m.content = val;
@@ -121,9 +120,10 @@ export const NewTask = (props: Props) => {
     const t = { ...task };
     switch (modalField) {
       case "associatedWith":
-        t.associatedWithType = contentType;
-        t.associatedWithId = contentId;
-        t.associatedWithLabel = label;
+        // Empty values mean "no person or group": a plain to-do.
+        t.associatedWithType = contentId ? contentType : undefined;
+        t.associatedWithId = contentId || undefined;
+        t.associatedWithLabel = contentId ? label : undefined;
         break;
       case "assignedTo":
         t.assignedToType = contentType;
@@ -154,7 +154,8 @@ export const NewTask = (props: Props) => {
             <TextField
               fullWidth
               label={Locale.label("tasks.newTask.associateW")}
-              value={task.associatedWithLabel}
+              value={task.associatedWithLabel || ""}
+              helperText={Locale.label("tasks.newTask.associateHint", "Optional. Leave blank for a to-do that is not about anyone.")}
               InputProps={{
                 endAdornment: (
                   <InputAdornment position="end">
@@ -207,6 +208,19 @@ export const NewTask = (props: Props) => {
               variant="outlined"
             />
           </Grid>
+          <Grid size={{ xs: 12, sm: 6, md: props.compact ? 6 : 4 }}>
+            <TextField
+              fullWidth
+              type="date"
+              label={Locale.label("tasks.newTask.dueDate")}
+              value={DateHelper.formatHtml5Date(task.dueDate)}
+              name="dueDate"
+              onChange={handleChange}
+              InputLabelProps={{ shrink: true }}
+              data-testid="task-due-date-input"
+              variant="outlined"
+            />
+          </Grid>
         </Grid>
 
         <TextField
@@ -240,7 +254,7 @@ export const NewTask = (props: Props) => {
         </Stack>
       </Stack>
 
-      {modalField !== "" && <ContentPicker onClose={handleModalClose} onSelect={handleContentPicked} />}
+      {modalField !== "" && <ContentPicker onClose={handleModalClose} onSelect={handleContentPicked} allowNone={modalField === "associatedWith"} />}
     </Surface>
   );
 };

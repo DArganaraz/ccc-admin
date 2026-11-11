@@ -21,12 +21,10 @@ Run your own private instance — B1Admin, the B1 member portal, the API, and a 
 ### Docker
 
 ```bash
-git clone https://github.com/ChurchApps/B1Admin.git
-cd B1Admin
-docker compose up -d
+curl -fsSL https://raw.githubusercontent.com/ChurchApps/B1Admin/main/deploy/install.sh | bash -s -- --domain church.example.org
 ```
 
-Then open http://localhost:3101 and register — the first account becomes the server admin. See the [Docker self-hosting guide](https://support.churchapps.org/docs/developer/deployment/docker) for custom domains, email, backups, and updating.
+Prebuilt images, automatic HTTPS, one domain (`/` website, `/admin` dashboard, `/api`). Leave out `--domain` for a local install at http://localhost. Then open `/admin` and register — the first account becomes the server admin. Upgrade any time with `./deploy/b1 upgrade` (it backs up first). See the [Docker self-hosting guide](https://support.churchapps.org/docs/developer/deployment/docker) for email, backups, and the rest.
 
 ### Railway
 
@@ -68,7 +66,7 @@ To accept online donations you must first register for developer credentials wit
 - **Stripe**: Visit https://dashboard.stripe.com/register (or sign in at https://dashboard.stripe.com/login), then navigate to **Developers → API keys** to copy your Publishable Key and Secret Key for both test and live modes.
 - **PayPal**: Go to https://developer.paypal.com/, log in or create an account, then under **My Apps & Credentials** create a new application to obtain your Sandbox and Live Client ID and Secret.
 - **KingdomFunding**: Kingdom Funding is a payment processing option built with Christian values in mind! To get started:
-  1. Visit the Kingdom Funding signup page (https://kingdomfunding.org/begin-registration/?sponsor=b1) and fill out the application form.
+  1. Visit the Kingdom Funding signup page (https://kingdomfundinginternational.com/churches/apply?sponsor=b1) and fill out the application form.
   2. Kingdom Funding will walk you through the account onboarding process, including identity verification and bank account setup.
   3. Once your account is approved, you will receive your API Source Key (private key) and Tokenization Key (public key) from the merchant portal.
   4. In B1Admin, go to **Settings → Giving Settings**, select **Kingdom Funding** as the provider, paste in your Public Key (Tokenization Key) and Private Key (API Source Key), and save.

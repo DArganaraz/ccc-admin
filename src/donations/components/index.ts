@@ -1,11 +1,11 @@
 export * from "../../components";
 export { BatchEdit } from "./BatchEdit";
 export { BulkDonationEntry } from "./BulkDonationEntry";
+export { CsvImportDialog } from "./CsvImportDialog";
 export { CampaignEdit } from "./CampaignEdit";
 export { PledgeEdit } from "./PledgeEdit";
 export { DonationEdit } from "./DonationEdit";
 export { Donations } from "./Donations";
-export { Funds } from "./Funds";
 export { FundEdit } from "./FundEdit";
 export { DonationEvents } from "./DonationEvents";
 export { GivingLinkDialog } from "./GivingLinkDialog";

@@ -1,9 +1,10 @@
-import { type Locator, type Page, test as plainTest } from "@playwright/test";
+import { type APIRequestContext, type Locator, type Page, test as plainTest } from "@playwright/test";
 import { loggedInTest as test, expect } from "./helpers/test-fixtures";
 import { navigateToCalendars } from "./helpers/navigation";
 import { login } from "./helpers/auth";
 import { STORAGE_STATE_PATH } from "./global-setup";
 import { confirmDelete } from "./helpers/fixtures";
+import { mockChurchLogo, DEMO_LOGO } from "./helpers/print-logo";
 
 // Group-level event editing in B1App; B1Admin manages curated calendars (aggregations for public display).
 
@@ -55,6 +56,18 @@ test.describe("Curated Calendars page", () => {
       await emptyBtn.click();
     }
     await expect(page.locator('[data-testid="save-calendar-button"]')).toBeDisabled();
+  });
+});
+
+test.describe("Calendar edit form", () => {
+  test("shows no placeholder settings text", async ({ page }) => {
+    await navigateToCalendars(page);
+    const addButton = page.locator('[data-testid="add-calendar"]').or(page.locator('[data-testid="empty-state-add-calendar"]')).first();
+    await expect(addButton).toBeVisible({ timeout: 15000 });
+    await addButton.click();
+    await expect(page.locator('[data-testid="calendar-name-input"] input')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText("Configure your calendar settings")).toHaveCount(0);
+    await expect(page.getByText("Calendar Details", { exact: true })).toHaveCount(0);
   });
 });
 
@@ -355,6 +368,28 @@ test.describe.serial("Editing an existing calendar event", () => {
     await page.unroute("**/content/gallery/1.78");
   });
 
+  test("saves comma-separated tags and sees them again on reopen", async () => {
+    const block = await findEventBlock(page, EDIT_EVENT_TITLE);
+    await block.click();
+    await page.locator('[data-testid="calendar-event-edit-button"]').click();
+    await expect(page.locator('[data-testid="new-event-title-input"] input')).toHaveValue(EDIT_EVENT_TITLE, { timeout: 10000 });
+    await page.locator('[data-testid="new-event-tags-input"] input').fill("youth, students");
+
+    const eventPost = page.waitForResponse((r) => r.url().includes("/content/events") && r.request().method() === "POST" && r.ok(), { timeout: 15000 });
+    await page.locator('[data-testid="new-event-save-button"]').click();
+    await confirmDelete(page);
+    const saved = await (await eventPost).json();
+    expect(saved[0]?.tags, "saved tags").toBe("youth, students");
+    await expect(page.locator('[data-testid="new-event-save-button"]')).toHaveCount(0, { timeout: 15000 });
+
+    const reopened = await findEventBlock(page, EDIT_EVENT_TITLE);
+    await reopened.click();
+    await page.locator('[data-testid="calendar-event-edit-button"]').click();
+    await expect(page.locator('[data-testid="new-event-tags-input"] input')).toHaveValue("youth, students", { timeout: 10000 });
+    await page.locator('[data-testid="new-event-cancel-button"]').click();
+    await page.locator('[data-testid="calendar-event-cancel-button"]').click();
+  });
+
   test("warns that saving a recurring event updates the whole series, then persists the edit", async () => {
     const block = await findEventBlock(page, EDIT_EVENT_TITLE);
     await block.click();
@@ -450,7 +485,325 @@ plainTest.describe("Calendar print colors in dark mode", () => {
 
     const label = page.locator(".print-area .rbc-toolbar-label");
     await expect(label).toBeVisible({ timeout: 15000 });
-    const { color, luminance } = await printLuminanceOf(label);
-    expect(luminance, "text color " + color).toBeLessThan(0.4);
+    // The print styles mount with the page, so poll rather than read the first paint's color.
+    await expect.poll(async () => (await printLuminanceOf(label)).luminance, { timeout: 10000 }).toBeLessThan(0.4);
+  });
+});
+
+const API_BASE = process.env.API_BASE || "http://localhost:8084";
+const CHURCH_ID = "CHU00000001";
+
+async function apiLogin(api: APIRequestContext) {
+  const res = await api.post(`${API_BASE}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+  const body = await res.json();
+  const uc = (body.userChurches || []).find((c: any) => c.church?.id === CHURCH_ID) || body.userChurches?.[0];
+  return { headers: { Authorization: "Bearer " + uc.jwt } };
+}
+
+async function openCuratedCalendar(page: Page, id: string) {
+  const entries = page.waitForResponse((r) => r.url().includes(`/curatedEvents/calendar/${id}?withoutEvents=1`));
+  await page.goto(`/calendars/${id}`);
+  await entries;
+  await page.locator('[data-testid="calendar-add-event-button"]').waitFor({ state: "visible", timeout: 15000 });
+  await expect(page.locator('[data-testid="groups-loading"]')).toHaveCount(0, { timeout: 15000 });
+}
+
+async function openAddGroup(page: Page) {
+  await page.locator('[data-testid="calendar-add-event-button"]').click();
+  const combo = page.locator('[data-testid="calendar-group-select"]').first();
+  await combo.waitFor({ state: "visible", timeout: 10000 });
+  await combo.click();
+}
+
+// Issue 1337: Add Group only listed the admin's own groups, an event listed on its own and through its
+// whole group showed twice, and a single-event entry showed its group under "Groups in Calendar".
+test.describe("Curated calendar groups", () => {
+  test("Add Group lists groups the admin is not a member of", async ({ page }) => {
+    // Demo User is not in Youth Group.
+    await openCuratedCalendar(page, "CAL00000004");
+    await openAddGroup(page);
+    await expect(page.getByRole("option", { name: "Youth Group", exact: true })).toBeVisible({ timeout: 10000 });
+  });
+
+  test("a single-event entry does not show its group as connected", async ({ page }) => {
+    // Small Groups Calendar only lists one Young Families Group event, not the whole group.
+    await openCuratedCalendar(page, "CAL00000003");
+    await expect(page.getByText("Groups in Calendar")).toBeVisible();
+    await expect(page.getByText("No groups added yet")).toBeVisible();
+    await expect(page.locator('[data-testid="remove-group-GRP00000014-button"]')).toHaveCount(0);
+  });
+
+  test("adding a whole group does not show its already-listed event twice", async ({ page }) => {
+    // Uses its own calendar so seeded calendars keep their curated rows.
+    const auth = await apiLogin(page.request);
+    const calRes = await page.request.post(`${API_BASE}/content/curatedCalendars`, { ...auth, data: [{ name: "Zacchaeus Duplicate Event Calendar" }] });
+    expect(calRes.ok()).toBeTruthy();
+    const calendarId: string = (await calRes.json())[0].id;
+    try {
+      // Youth Group is not on Main Church Calendar; list one of its events on its own first.
+      const evRes = await page.request.post(`${API_BASE}/content/curatedEvents`, {
+        ...auth,
+        data: [{ curatedCalendarId: calendarId, groupId: "GRP00000013", eventIds: ["EVT00000005"] }]
+      });
+      expect(evRes.ok()).toBeTruthy();
+
+      await openCuratedCalendar(page, calendarId);
+      await openAddGroup(page);
+      await page.getByRole("option", { name: "Youth Group", exact: true }).click();
+      const saved = page.waitForResponse((r) => r.url().includes("/curatedEvents") && r.request().method() === "POST");
+      await page.locator('[data-testid="calendar-edit-save-button"]').click();
+      await saved;
+      await expect(page.locator('[data-testid="remove-group-GRP00000013-button"]')).toBeVisible({ timeout: 15000 });
+
+      const res = await page.request.get(`${API_BASE}/content/curatedEvents/public/calendar/${CHURCH_ID}/${calendarId}`);
+      const rows: { realEventId: string }[] = await res.json();
+      expect(rows.filter((r) => r.realEventId === "EVT00000005")).toHaveLength(1);
+    } finally {
+      // Deleting the calendar does not delete its curated rows, so remove the group first.
+      await page.request.delete(`${API_BASE}/content/curatedEvents/calendar/${calendarId}/group/GRP00000013`, auth);
+      await page.request.delete(`${API_BASE}/content/curatedCalendars/${calendarId}`, auth);
+    }
+  });
+
+  // Issue 1343: the button on a curated row said "Delete", but it only takes the row off this calendar.
+  async function openRemoveConfirm(page: Page, title: string, singleEvent: boolean) {
+    const auth = await apiLogin(page.request);
+    const calRes = await page.request.post(`${API_BASE}/content/curatedCalendars`, { ...auth, data: [{ name: title + " Calendar" }] });
+    expect(calRes.ok()).toBeTruthy();
+    const calendarId: string = (await calRes.json())[0].id;
+    let eventId = "";
+    const cleanup = async () => {
+      // Deleting the calendar does not delete its curated rows, so remove the group first.
+      await page.request.delete(`${API_BASE}/content/curatedEvents/calendar/${calendarId}/group/GRP00000004`, auth);
+      if (eventId) await page.request.delete(`${API_BASE}/content/events/${eventId}`, auth);
+      await page.request.delete(`${API_BASE}/content/curatedCalendars/${calendarId}`, auth);
+    };
+    try {
+      const start = new Date();
+      start.setHours(12, 0, 0, 0);
+      const end = new Date(start);
+      end.setHours(13, 0, 0, 0);
+      const evRes = await page.request.post(`${API_BASE}/content/events`, {
+        ...auth,
+        data: [{ groupId: "GRP00000004", title, start, end, allDay: false, visibility: "public" }]
+      });
+      expect(evRes.ok()).toBeTruthy();
+      eventId = (await evRes.json())[0].id;
+      const row = singleEvent ? { curatedCalendarId: calendarId, groupId: "GRP00000004", eventIds: [eventId] } : { curatedCalendarId: calendarId, groupId: "GRP00000004" };
+      const curRes = await page.request.post(`${API_BASE}/content/curatedEvents`, { ...auth, data: [row] });
+      expect(curRes.ok()).toBeTruthy();
+
+      await openCuratedCalendar(page, calendarId);
+      await page.getByText(title, { exact: true }).first().click();
+      const removeButton = page.getByTestId("calendar-event-delete-button");
+      await expect(removeButton).toHaveText("Remove from Calendar", { timeout: 15000 });
+      await removeButton.click();
+      return { confirmDialog: page.locator('div[role="dialog"]').last(), cleanup };
+    } catch (e) {
+      await cleanup();
+      throw e;
+    }
+  }
+
+  test("removing a whole-group row says it takes all of the group's events off the calendar", async ({ page }) => {
+    const { confirmDialog, cleanup } = await openRemoveConfirm(page, "Zacchaeus Remove Group Row Event", false);
+    try {
+      await expect(confirmDialog).toContainText("removes all of that group's events from this calendar");
+      await expect(confirmDialog.getByRole("button", { name: "Remove from Calendar" })).toBeVisible();
+      await confirmDialog.getByRole("button", { name: "Cancel" }).click();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test("removing a single-event row says the event stays in its group", async ({ page }) => {
+    const { confirmDialog, cleanup } = await openRemoveConfirm(page, "Zacchaeus Remove Direct Row Event", true);
+    try {
+      await expect(confirmDialog).toContainText("The event stays in its group.");
+      await expect(confirmDialog.getByRole("button", { name: "Remove from Calendar" })).toBeVisible();
+      await confirmDialog.getByRole("button", { name: "Cancel" }).click();
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+// Importing an .ics from a calendar's page saves the events to the chosen group and adds that group to the calendar.
+test.describe("Importing an .ics onto a curated calendar", () => {
+  const IMPORT_GROUP_ID = "GRP00000004"; // Adult Bible Class
+
+  function buildIcs(title: string) {
+    const d = new Date();
+    d.setDate(15);
+    const day = `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}`;
+    return [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//B1Admin Tests//EN",
+      "BEGIN:VEVENT",
+      "UID:curated-calendar-import@test",
+      `DTSTART:${day}T150000Z`,
+      `DTEND:${day}T160000Z`,
+      `SUMMARY:${title}`,
+      "END:VEVENT",
+      "END:VCALENDAR"
+    ].join("\r\n");
+  }
+
+  test("imported .ics events show on the calendar they were imported from", async ({ page }) => {
+    const title = "Zacchaeus Imported Picnic";
+    const auth = await apiLogin(page.request);
+    const calRes = await page.request.post(`${API_BASE}/content/curatedCalendars`, { ...auth, data: [{ name: "Zacchaeus Import Calendar" }] });
+    expect(calRes.ok()).toBeTruthy();
+    const calendarId: string = (await calRes.json())[0].id;
+    const importedIds: string[] = [];
+    try {
+      await page.goto(`/calendars/${calendarId}`);
+      await expect(page.locator("#page-header-title")).toHaveText("Zacchaeus Import Calendar", { timeout: 15000 });
+
+      await page.getByTestId("import-ics-button").click();
+      await page.getByTestId("import-ics-group-select").click();
+      await page.getByRole("option", { name: "Adult Bible Class" }).click();
+      await page.getByTestId("import-ics-text-input").locator("textarea").first().fill(buildIcs(title));
+      const imported = page.waitForResponse((r) => r.url().includes("/events/ical") && r.request().method() === "POST");
+      await page.getByTestId("import-ics-submit").click();
+      importedIds.push(...((await (await imported).json()) as { id: string }[]).map((e) => e.id));
+      await expect(page.getByTestId("import-ics-success")).toBeVisible({ timeout: 15000 });
+      await page.getByTestId("import-ics-close-button").click();
+
+      await expect(page.getByTestId("calendar-identity").getByText("Adult Bible Class", { exact: true })).toBeVisible({ timeout: 15000 });
+      await expect(page.getByTestId("calendar-record").getByText(title).first()).toBeVisible({ timeout: 15000 });
+    } finally {
+      // Deleting the calendar does not delete its curated rows, so remove the group first.
+      await page.request.delete(`${API_BASE}/content/curatedEvents/calendar/${calendarId}/group/${IMPORT_GROUP_ID}`, auth);
+      await page.request.delete(`${API_BASE}/content/curatedCalendars/${calendarId}`, auth);
+      for (const id of importedIds) await page.request.delete(`${API_BASE}/content/events/${id}`, auth);
+    }
+  });
+});
+
+// Issue 1443: the calendar printout had no church letterhead and cut long event names off at one line.
+test.describe("Calendar print letterhead and full event names", () => {
+  const LONG_TITLE = "Zacchaeus Sunday Worship Service And Fellowship Luncheon In The Hall";
+
+  test("prints the church logo and name above the grid and wraps long event names", async ({ page }) => {
+    const auth = await apiLogin(page.request);
+    const calRes = await page.request.post(`${API_BASE}/content/curatedCalendars`, { ...auth, data: [{ name: "Zacchaeus Print Letterhead Calendar" }] });
+    expect(calRes.ok()).toBeTruthy();
+    const calendarId: string = (await calRes.json())[0].id;
+    let eventId = "";
+    try {
+      const start = new Date();
+      start.setDate(10);
+      start.setHours(10, 0, 0, 0);
+      const end = new Date(start);
+      end.setHours(11, 0, 0, 0);
+      const evRes = await page.request.post(`${API_BASE}/content/events`, {
+        ...auth,
+        data: [{ groupId: "GRP00000004", title: LONG_TITLE, start, end, allDay: false, visibility: "public" }]
+      });
+      expect(evRes.ok()).toBeTruthy();
+      eventId = (await evRes.json())[0].id;
+      const curRes = await page.request.post(`${API_BASE}/content/curatedEvents`, { ...auth, data: [{ curatedCalendarId: calendarId, groupId: "GRP00000004" }] });
+      expect(curRes.ok()).toBeTruthy();
+
+      await mockChurchLogo(page);
+      await openCuratedCalendar(page, calendarId);
+      const content = page.locator(".print-area .rbc-row-segment .rbc-event-content").filter({ hasText: LONG_TITLE }).first();
+      await expect(content).toBeVisible({ timeout: 15000 });
+      const header = page.getByTestId("calendar-print-header");
+      await expect(header).toBeHidden();
+      expect(await content.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe("nowrap");
+
+      await page.emulateMedia({ media: "print" });
+      await expect(header).toBeVisible();
+      await expect(header.getByTestId("print-church-logo")).toHaveAttribute("src", DEMO_LOGO);
+      await expect(header).toContainText("Grace Community Church");
+      await expect(header).toContainText("Zacchaeus Print Letterhead Calendar");
+      expect(await content.evaluate((el) => getComputedStyle(el).whiteSpace)).toBe("normal");
+      expect(await content.evaluate((el) => getComputedStyle(el).overflow)).toBe("visible");
+    } finally {
+      await page.request.delete(`${API_BASE}/content/curatedEvents/calendar/${calendarId}/group/GRP00000004`, auth);
+      if (eventId) await page.request.delete(`${API_BASE}/content/events/${eventId}`, auth);
+      await page.request.delete(`${API_BASE}/content/curatedCalendars/${calendarId}`, auth);
+    }
+  });
+});
+
+// #1488: a group's Calendar tab splits events into Upcoming and Past, like Plans.
+test.describe.serial("Group Calendar tab Upcoming / Past", () => {
+  const API = process.env.API_BASE || "http://localhost:8084";
+  const stamp = Date.now();
+  const groupName = `Zacchaeus Past Events Group ${stamp}`;
+  const pastTitle = `Zacchaeus Past Meeting ${stamp}`;
+  const futureTitle = `Zacchaeus Future Meeting ${stamp}`;
+  let ctx: APIRequestContext;
+  let jwt: string;
+  let groupId: string;
+  let page: Page;
+
+  const auth = () => ({ headers: { Authorization: "Bearer " + jwt } });
+  const daysFromNow = (days: number, hour: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    d.setHours(hour, 0, 0, 0);
+    return d.toISOString();
+  };
+
+  test.beforeAll(async ({ browser, playwright }) => {
+    ctx = await playwright.request.newContext();
+    const loginRes = await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+    const body = await loginRes.json();
+    const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+    jwt = uc.jwt;
+    const groupRes = await ctx.post(`${API}/membership/groups`, { ...auth(), data: [{ name: groupName, categoryName: "Past Events Test", tags: "standard" }] });
+    groupId = (await groupRes.json())[0].id;
+    const evRes = await ctx.post(`${API}/content/events`, {
+      ...auth(),
+      data: [
+        { groupId, title: pastTitle, start: daysFromNow(-10, 18), end: daysFromNow(-10, 19), allDay: false, visibility: "public" },
+        { groupId, title: futureTitle, start: daysFromNow(10, 18), end: daysFromNow(10, 19), allDay: false, visibility: "public" }
+      ]
+    });
+    expect(evRes.ok(), "seed events POST succeeded").toBeTruthy();
+    const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+    page = await context.newPage();
+    await login(page);
+  });
+
+  test.afterAll(async () => {
+    try {
+      const events = await (await ctx.get(`${API}/content/events/group/${groupId}`, auth())).json();
+      for (const ev of events || []) await ctx.delete(`${API}/content/events/${ev.id}`, auth());
+      await ctx.delete(`${API}/membership/groups/${groupId}`, auth());
+    } catch { /* best effort */ }
+    await ctx?.dispose();
+    await page?.context().close();
+  });
+
+  test("Upcoming lists only future events and Past only past ones", async () => {
+    await page.goto(`/groups/${groupId}`);
+    await page.getByTestId("group-all-events").click();
+    const tab = page.locator('[data-testid="group-calendar-tab"]');
+    await expect(tab).toBeVisible({ timeout: 15000 });
+    await expect(tab.getByText(futureTitle)).toBeVisible({ timeout: 15000 });
+    await expect(tab.getByText(pastTitle)).toHaveCount(0);
+
+    await page.locator('[data-testid="group-calendar-past-pill"]').click();
+    await expect(tab.getByText(pastTitle)).toBeVisible();
+    await expect(tab.getByText(futureTitle)).toHaveCount(0);
+
+    await page.locator('[data-testid="group-calendar-upcoming-pill"]').click();
+    await expect(tab.getByText(futureTitle)).toBeVisible();
+  });
+
+  test("Past shows an empty state when the group has no past events", async () => {
+    const events = await (await ctx.get(`${API}/content/events/group/${groupId}`, auth())).json();
+    const past = (events || []).find((e: any) => e.title === pastTitle);
+    await ctx.delete(`${API}/content/events/${past.id}`, auth());
+    await page.goto(`/groups/${groupId}`);
+    await page.getByTestId("group-all-events").click();
+    await page.locator('[data-testid="group-calendar-past-pill"]').click();
+    await expect(page.getByText("No past events yet.")).toBeVisible({ timeout: 15000 });
   });
 });

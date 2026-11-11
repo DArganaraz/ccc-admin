@@ -1,5 +1,8 @@
+import { test as plainTest, type Page } from "@playwright/test";
 import { loggedInTest as test, expect } from "./helpers/test-fixtures";
 import { openPrimaryNav } from "./helpers/navigation";
+import { createNamesOnlyRole, deleteRole, loginAsVolunteer } from "./helpers/names-only-role";
+import { personAddButton } from "./helpers/fixtures";
 
 test.describe("Sunday home", () => {
   test.beforeEach(async ({ page }) => {
@@ -66,7 +69,7 @@ test.describe("Sunday home", () => {
       await personSearch.fill("Demo User");
       const searchBtn = page.locator('[data-testid="search-button"]');
       await searchBtn.click();
-      const selectBtn = page.locator('[data-testid^="add-person-"]').first();
+      const selectBtn = personAddButton(page, "Demo User");
       await selectBtn.click();
 
       const taskName = page.locator('[name="title"]');
@@ -98,5 +101,77 @@ test.describe("Sunday home", () => {
     const cancelBtn = page.locator("button").getByText("Cancel");
     await cancelBtn.click();
     await expect(assignInput).toHaveCount(0, { timeout: 10000 });
+  });
+});
+
+// Holds matching API requests until release() is called, so the page stays in its loading state.
+const holdRequests = async (page: Page, pattern: RegExp) => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(pattern, async (route) => { await gate; await route.continue().catch(() => {}); });
+  return () => release();
+};
+
+// ChurchAppsSupport#1341: the home page said "No service planned this week." and "You're not in any groups yet." while still loading.
+test.describe("Home page loading states", () => {
+  test("home page shows loading, not empty, while its cards load", async ({ page }) => {
+    const release = await holdRequests(page, /\/(plans\/presenter|groupmembers\?personId=)/);
+    await page.goto("/");
+    await expect(page.getByTestId("sunday-home")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("home-my-groups")).toBeVisible({ timeout: 15000 });
+
+    await expect(page.getByTestId("sunday-loading")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId("my-groups-loading")).toBeVisible();
+    await expect(page.getByText("No service planned this week.")).toHaveCount(0);
+    await expect(page.getByText("You're not in any groups yet.")).toHaveCount(0);
+
+    release();
+    await expect(page.getByTestId("sunday-loading")).toHaveCount(0, { timeout: 15000 });
+    await expect(page.getByTestId("my-groups-loading")).toHaveCount(0, { timeout: 15000 });
+  });
+});
+
+// ChurchAppsSupport#1284: a user whose only people permission is View Names is not offered All groups, People, or Attendance.
+test.describe("Needs attention", () => {
+  test("one pending approval and one join request read in the singular", async ({ page }) => {
+    await page.route("**/events/pending", (route) => route.fulfill({ json: [{ id: "e1", title: "Pending event" }] }));
+    await page.route("**/eventBookings/pending", (route) => route.fulfill({ json: [] }));
+    await page.route("**/groupjoinrequests/pending", (route) => route.fulfill({ json: [{ id: "r1" }] }));
+    await page.goto("/");
+    const card = page.getByTestId("needs-attention");
+    await expect(card).toContainText("1 pending calendar approval", { timeout: 15000 });
+    await expect(card).toContainText("1 pending group join request");
+    await expect(card).not.toContainText("approvals");
+    await expect(card).not.toContainText("requests");
+  });
+});
+
+plainTest.describe("View People Names Only", () => {
+  plainTest.use({ storageState: { cookies: [], origins: [] } });
+  let roleId = "";
+  plainTest.beforeAll(async () => { roleId = await createNamesOnlyRole("Issue 1284 Names Only (dashboard)"); });
+  plainTest.afterAll(async () => { await deleteRole(roleId); });
+
+  plainTest("dashboard hides All groups and the People and Attendance hint links", async ({ page }) => {
+    await loginAsVolunteer(page);
+    const myGroups = page.getByTestId("home-my-groups");
+    await expect(myGroups).toBeVisible({ timeout: 15000 });
+    await expect(myGroups.getByRole("link", { name: "All groups" })).toHaveCount(0);
+    await expect(myGroups.locator('a[href^="/groups/GRP"]').first()).toBeVisible({ timeout: 10000 });
+
+    const hint = page.getByTestId("sunday-live-hint");
+    await expect(hint).toBeVisible({ timeout: 15000 });
+    await expect(hint.getByRole("link", { name: "People" })).toHaveCount(0);
+    await expect(hint.getByRole("link", { name: "Attendance" })).toHaveCount(0);
+  });
+
+  plainTest("Sunday card shows the plan name without a link to the plan", async ({ page }) => {
+    // On a Sunday the card only looks at today; reset-demo seeds plans from tomorrow on, so look from one day ahead.
+    await page.clock.setFixedTime(new Date(Date.now() + 86400000));
+    await loginAsVolunteer(page);
+    const sermon = page.locator('[data-testid="sunday-home"] h1.om-sermon');
+    // volunteer@b1.church is not a plan editor, not in the plan's ministry and not assigned to the plan.
+    await expect(sermon).toHaveText(/Schedule|Plan/, { timeout: 15000 });
+    await expect(sermon.locator("a")).toHaveCount(0);
   });
 });

@@ -38,6 +38,9 @@ export function EventModal(props: Props) {
   const [end, setEnd] = useState("");
   const [rRule, setRRule] = useState("");
   const [visibility, setVisibility] = useState("public");
+  const [tags, setTags] = useState("");
+  const [notesViewRole, setNotesViewRole] = useState("staff");
+  const [notesPostRole, setNotesPostRole] = useState("staff");
   const [roomIds, setRoomIds] = useState<string[]>(props.initialRoomId ? [props.initialRoomId] : []);
   const [resourceIds, setResourceIds] = useState<string[]>(props.initialResourceId ? [props.initialResourceId] : []);
   const [conflicts, setConflicts] = useState<ConflictInterface[]>([]);
@@ -78,6 +81,9 @@ export function EventModal(props: Props) {
         if (data.end) setEnd(toInputValue(new Date(data.end)));
         if (data.recurrenceRule) setRRule(data.recurrenceRule);
         if (data.visibility) setVisibility(data.visibility);
+        if (data.tags) setTags(data.tags);
+        setNotesViewRole((data as any).notesViewRole || "staff");
+        setNotesPostRole((data as any).notesPostRole || "staff");
         setHasRegistration(!!data.registrationEnabled);
       });
       ApiHelper.get("/eventBookings/event/" + props.eventId, "ContentApi").then((data: any[]) => {
@@ -133,7 +139,8 @@ export function EventModal(props: Props) {
         startTime: customWindow && windowStart ? new Date(windowStart) : undefined,
         endTime: customWindow && windowEnd ? new Date(windowEnd) : undefined,
         roomIds,
-        resources: resourceIds.map((id) => ({ resourceId: id, quantity: 1 }))
+        resources: resourceIds.map((id) => ({ resourceId: id, quantity: 1 })),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
       }, "ContentApi").then(setConflicts).catch(() => setConflicts([]));
     }, 400);
     return () => clearTimeout(timeout);
@@ -181,6 +188,9 @@ export function EventModal(props: Props) {
         end: new Date(end),
         allDay: false,
         visibility,
+        tags: tags.trim() || null,
+        notesViewRole: notesViewRole === "staff" ? null : notesViewRole,
+        notesPostRole: notesPostRole === "staff" ? null : notesPostRole,
         recurrenceRule: rRule || undefined
       } as EventInterface;
       const savedEvents = await ApiHelper.post("/events", [event], "ContentApi");
@@ -276,7 +286,20 @@ export function EventModal(props: Props) {
                 <MenuItem value="private">{Locale.label("calendars.newEvent.private")}</MenuItem>
               </TextField>
             </Stack>
+            <TextField fullWidth label={Locale.label("calendars.newEvent.tags")} value={tags} onChange={(e) => setTags(e.target.value)} helperText={Locale.label("calendars.newEvent.tagsHelp")} data-testid="new-event-tags-input" />
             {rRule && start && <RRuleEditor start={new Date(start)} rRule={rRule} onChange={setRRule} />}
+            <Stack direction="row" spacing={2}>
+              <TextField fullWidth select label={Locale.label("calendars.newEvent.notesViewRole")} value={notesViewRole} onChange={(e) => setNotesViewRole(e.target.value)} data-testid="new-event-notes-view-select">
+                <MenuItem value="staff">{Locale.label("calendars.newEvent.notesStaff")}</MenuItem>
+                <MenuItem value="leaders">{Locale.label("calendars.newEvent.notesLeaders")}</MenuItem>
+                <MenuItem value="members">{Locale.label("calendars.newEvent.notesMembers")}</MenuItem>
+              </TextField>
+              <TextField fullWidth select label={Locale.label("calendars.newEvent.notesPostRole")} value={notesPostRole} onChange={(e) => setNotesPostRole(e.target.value)} data-testid="new-event-notes-post-select">
+                <MenuItem value="staff">{Locale.label("calendars.newEvent.notesStaff")}</MenuItem>
+                <MenuItem value="leaders">{Locale.label("calendars.newEvent.notesLeaders")}</MenuItem>
+                <MenuItem value="members">{Locale.label("calendars.newEvent.notesMembers")}</MenuItem>
+              </TextField>
+            </Stack>
             {rooms.length > 0 && (
               <TextField
                 fullWidth
@@ -288,9 +311,12 @@ export function EventModal(props: Props) {
                 data-testid="new-event-rooms-select"
               >
                 {rooms.map((r) => (
-                  <MenuItem key={r.id} value={r.id}>
+                  <MenuItem key={r.id} value={r.id} sx={{ whiteSpace: "normal" }}>
                     <Checkbox checked={roomIds.includes(r.id || "")} size="small" />
-                    <ListItemText primary={r.name} secondary={r.capacity ? Locale.label("calendars.newEvent.seats").replace("{}", r.capacity.toString()) : undefined} />
+                    <ListItemText
+                      primary={r.name}
+                      secondary={[r.capacity ? Locale.label("calendars.newEvent.seats").replace("{}", r.capacity.toString()) : undefined, r.description].filter(Boolean).join(" · ") || undefined}
+                    />
                   </MenuItem>
                 ))}
               </TextField>
@@ -306,9 +332,9 @@ export function EventModal(props: Props) {
                 data-testid="new-event-resources-select"
               >
                 {resources.map((r) => (
-                  <MenuItem key={r.id} value={r.id}>
+                  <MenuItem key={r.id} value={r.id} sx={{ whiteSpace: "normal" }}>
                     <Checkbox checked={resourceIds.includes(r.id || "")} size="small" />
-                    <ListItemText primary={r.name} />
+                    <ListItemText primary={r.name} secondary={r.description || undefined} />
                   </MenuItem>
                 ))}
               </TextField>

@@ -1,9 +1,9 @@
 import React, { useContext, useCallback } from "react";
-import { Box, Stack, Typography, Button } from "@mui/material";
+import { Box, Stack, Typography, Button, TextField } from "@mui/material";
 import { ApiHelper, Notes, DateHelper, type ConversationInterface, Locale, Loading } from "@churchapps/apphelper";
 import { type TaskInterface, type UserContextInterface } from "@churchapps/helpers";
 import { Link as RouterLink, useParams } from "react-router-dom";
-import { PageContainer, RecordLayout, StatusBadge, TextAction, eyebrowSx, RecordActions } from "../../components/ui";
+import { PageContainer, EmptyState, RecordLayout, StatusBadge, TextAction, eyebrowSx, RecordActions } from "../../components/ui";
 import { ContentPicker } from "./components/ContentPicker";
 import UserContext from "../../UserContext";
 import { RequestedChanges } from "./components/RequestedChanges";
@@ -11,6 +11,7 @@ import { AccountDeletionRequest } from "./components/AccountDeletionRequest";
 import { GroupJoinRequestTask } from "./components/GroupJoinRequestTask";
 import { TaskReminderEdit } from "./components/TaskReminderEdit";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Assignment as AssignmentIcon } from "@mui/icons-material";
 
 export const TaskPage = () => {
   const params = useParams();
@@ -40,9 +41,10 @@ export const TaskPage = () => {
       const t = { ...task.data };
       switch (modalField) {
         case "associatedWith":
-          t.associatedWithType = contentType;
-          t.associatedWithId = contentId;
-          t.associatedWithLabel = label;
+          // Empty values clear the association; null (not undefined) so the Api writes NULL.
+          t.associatedWithType = (contentId ? contentType : null) as string;
+          t.associatedWithId = (contentId || null) as string;
+          t.associatedWithLabel = (contentId ? label : null) as string;
           break;
         case "assignedTo":
           t.assignedToType = contentType;
@@ -63,6 +65,14 @@ export const TaskPage = () => {
       t.status = status;
       t.dateClosed = status === "Open" ? undefined : new Date();
       updateTaskMutation.mutate(t);
+    },
+    [task.data, updateTaskMutation]
+  );
+
+  const handleDueDateChange = useCallback(
+    (val: string) => {
+      if (!task.data) return;
+      updateTaskMutation.mutate({ ...task.data, dueDate: (val ? new Date(val + "T12:00") : null) as Date });
     },
     [task.data, updateTaskMutation]
   );
@@ -88,7 +98,17 @@ export const TaskPage = () => {
   }, [task.data, updateTaskMutation]);
 
   if (task.isLoading) return <Loading />;
-  if (!task.data) return <></>;
+  if (!task.data?.id) {
+    return (
+      <PageContainer>
+        <EmptyState
+          icon={<AssignmentIcon />}
+          title={Locale.label("tasks.taskPage.notFound", "Task not found")}
+          action={<Button variant="contained" component={RouterLink} to="/serving/tasks">{Locale.label("tasks.myWork.title")}</Button>}
+        />
+      </PageContainer>
+    );
+  }
 
   const open = task.data.status === "Open";
   const quiet = { typography: "body2", color: "text.secondary", overflowWrap: "anywhere" } as const;
@@ -119,6 +139,12 @@ export const TaskPage = () => {
         <dd data-testid="task-associated-label">{task.data.associatedWithLabel || Locale.label("tasks.taskPage.notSpec")}</dd>
         <dt>{Locale.label("tasks.taskPage.assigned")}</dt>
         <dd data-testid="task-assigned-label">{task.data.assignedToLabel || Locale.label("tasks.taskPage.unassigned")}</dd>
+        <dt>{Locale.label("tasks.taskPage.due")}</dt>
+        <dd>
+          {task.data.assignmentId
+            ? (DateHelper.formatHtml5Date(task.data.dueDate) || "-")
+            : <TextField type="date" size="small" variant="standard" defaultValue={DateHelper.formatHtml5Date(task.data.dueDate)} key={String(task.data.dueDate || "")} onBlur={(e) => { if (e.target.value !== DateHelper.formatHtml5Date(task.data.dueDate)) handleDueDateChange(e.target.value); }} inputProps={{ "aria-label": Locale.label("tasks.taskPage.due") }} data-testid="task-due-input" />}
+        </dd>
       </Box>
       <Box sx={{ mt: 3 }}>
         <TaskReminderEdit taskId={task.data.id || ""} dueDate={task.data.dueDate} />
@@ -134,7 +160,7 @@ export const TaskPage = () => {
         {task.data.taskType === "groupJoinRequest" && <GroupJoinRequestTask task={task.data} />}
         <Notes context={context as UserContextInterface} conversationId={task.data.conversationId || ""} createConversation={handleCreateConversation as () => Promise<string>} />
       </RecordLayout>
-      {modalField !== "" && <ContentPicker onClose={handleModalClose} onSelect={handleContentPicked} />}
+      {modalField !== "" && <ContentPicker onClose={handleModalClose} onSelect={handleContentPicked} allowNone={modalField === "associatedWith"} />}
     </PageContainer>
   );
 };

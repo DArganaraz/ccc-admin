@@ -1,6 +1,6 @@
 import { request as pwRequest, type APIRequestContext, type Page } from "@playwright/test";
-import { servingTest as test, expect } from "./helpers/test-fixtures";
-import { dismissSendInviteIfPresent, confirmDelete } from "./helpers/fixtures";
+import { servingTest as test, loggedInTest, expect } from "./helpers/test-fixtures";
+import { dismissSendInviteIfPresent, confirmDelete, personAddButton } from "./helpers/fixtures";
 import { login } from "./helpers/auth";
 import { navigateToServing, siblingNav } from "./helpers/navigation";
 import { STORAGE_STATE_PATH } from "./global-setup";
@@ -105,7 +105,7 @@ test.describe.serial("Serving Management - Plans", () => {
       const searchBtn = page.locator('[data-testid="search-button"]');
       await searchBtn.click();
       // Icon-only buttons; text "Add" would substring-match "Add a New Person".
-      const addBtn = page.locator('[data-testid^="add-person-button-"]').first();
+      const addBtn = personAddButton(page, "Dorothy Jackson");
       await expect(addBtn).toBeVisible({ timeout: 10000 });
       const memberPost = page.waitForResponse(r => r.url().includes("/groupmembers") && r.request().method() === "POST", { timeout: 15000 }).catch((): null => null);
       await addBtn.click();
@@ -134,7 +134,7 @@ test.describe.serial("Serving Management - Plans", () => {
       const searched = page.waitForResponse(r => r.url().includes("/people") && r.status() === 200, { timeout: 10000 }).catch((): null => null);
       await firstName.fill("Grace");
       await searched;
-      const addBtn = page.locator('[data-testid^="add-person-button-"]').first();
+      const addBtn = personAddButton(page, "Grace Jackson");
       await expect(addBtn).toBeVisible({ timeout: 10000 });
       await addBtn.click();
       const verifiedPerson = page.locator('[id="groupMemberTable"] a').getByText("Grace Jackson");
@@ -345,7 +345,7 @@ test.describe.serial("Serving Management - Plans", () => {
       await personSearch.fill("Dorothy");
       const searchBtn = page.locator('[data-testid="search-button"]');
       await searchBtn.click();
-      const addBtn = page.locator('[data-testid^="add-person-button-"]').first();
+      const addBtn = personAddButton(page, "Dorothy Jackson");
       await expect(addBtn).toBeVisible({ timeout: 10000 });
       await addBtn.click();
       const verifiedPerson = page.locator('[id="groupMembersBox"] a').getByText("Dorothy Jackson");
@@ -374,7 +374,7 @@ test.describe.serial("Serving Management - Plans", () => {
       const searched = page.waitForResponse(r => r.url().includes("/people") && r.status() === 200, { timeout: 10000 }).catch((): null => null);
       await firstName.fill("Grace");
       await searched;
-      const addBtn = page.locator('[data-testid^="add-person-button-"]').first();
+      const addBtn = personAddButton(page, "Grace Jackson");
       await expect(addBtn).toBeVisible({ timeout: 10000 });
       await addBtn.click();
       const verifiedPerson = page.locator('[id="groupMembersBox"] a').getByText("Grace Jackson");
@@ -430,10 +430,13 @@ test.describe.serial("Serving Management - Plans", () => {
       await expect(editBtn).toBeVisible({ timeout: 10000 });
       await editBtn.click();
 
-      const deleteBtn = page.locator("button").getByText("Delete");
-      await deleteBtn.click();
-      const verifiedRemoved = page.locator("table a").getByText("Zebedee Team");
-      await expect(verifiedRemoved).toHaveCount(0, { timeout: 10000 });
+      // Group deletes ask in a styled confirm dialog and then land on /groups; until confirmed nothing is deleted.
+      await page.locator("#groupDetailsBox").getByRole("button", { name: "Delete", exact: true }).click();
+      await confirmDelete(page);
+      await page.waitForURL(/\/groups(\?|$)/, { timeout: 15000 });
+      await page.goto("/serving/plans");
+      await page.locator('[role="tab"]').getByText("Zebedee Ministry").first().click();
+      await expect(page.locator("a").getByText("Zebedee Team")).toHaveCount(0, { timeout: 10000 });
     });
   });
 
@@ -453,12 +456,74 @@ test.describe.serial("Serving Management - Plans", () => {
       await expect(editBtn).toBeVisible({ timeout: 10000 });
       await editBtn.click();
 
-      const deleteBtn = page.locator("button").getByText("Delete");
+      const deleteBtn = page.locator("#groupDetailsBox").getByRole("button", { name: "Delete", exact: true });
       await expect(deleteBtn).toBeVisible({ timeout: 10000 });
       await deleteBtn.click();
-      const verifiedRemoved = page.locator("table a").getByText("Zebedee Ministry");
-      await expect(verifiedRemoved).toHaveCount(0, { timeout: 10000 });
+      await confirmDelete(page);
+      await page.waitForURL(/\/groups(\?|$)/, { timeout: 15000 });
+      await page.goto("/serving/plans");
+      await expect(page.locator('[role="tab"]').getByText("Zebedee Ministry")).toHaveCount(0, { timeout: 10000 });
     });
+  });
+});
+
+// Holds matching API requests until release() is called, so the page stays in its loading state.
+const holdRequests = async (page: Page, pattern: RegExp) => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route(pattern, async (route) => { await gate; await route.continue().catch(() => {}); });
+  return () => release();
+};
+
+// ChurchAppsSupport#1341: the plan page said "No items in service order" and "Plan is valid." while still loading.
+loggedInTest.describe("Plan page loading states", () => {
+  loggedInTest("plan subpages show loading, not empty, while their lists load", async ({ page }) => {
+    let release = await holdRequests(page, /\/planItems\/plan\//);
+    await page.goto("/serving/plans/PLA00000001/order");
+    await expect(page.getByTestId("plan-identity").getByRole("link", { name: "Plans", exact: true })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("service-order-loading")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("No items in service order")).toHaveCount(0);
+    release();
+    await expect(page.getByTestId("service-order-loading")).toHaveCount(0, { timeout: 15000 });
+
+    release = await holdRequests(page, /\/(positions|assignments)\/plan\//);
+    await page.goto("/serving/plans/PLA00000001/team");
+    await expect(page.getByTestId("assignment-loading")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("Plan is valid.")).toHaveCount(0);
+    release();
+    await expect(page.getByTestId("assignment-loading")).toHaveCount(0, { timeout: 15000 });
+  });
+
+  loggedInTest("a failed serving team load stops loading and shows the error", async ({ page }) => {
+    await page.route(/\/positions\/plan\//, (route) => route.fulfill({ status: 500, body: "{}" }));
+    await page.goto("/serving/plans/PLA00000001/team");
+    await expect(page.getByTestId("plan-identity").getByRole("link", { name: "Plans", exact: true })).toBeVisible({ timeout: 15000 });
+
+    await expect(page.getByText("Couldn't load the serving team. Refresh to try again.")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("assignment-loading")).toHaveCount(0, { timeout: 15000 });
+  });
+});
+
+// The plan page is an overview; order of service and serving team are full-width subpages.
+loggedInTest.describe("Plan overview and subpages", () => {
+  loggedInTest("overview summarizes the plan and links to each subpage", async ({ page }) => {
+    await page.goto("/serving/plans/PLA00000001");
+    await expect(page.getByTestId("plan-overview")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("plan-order-summary")).toBeVisible();
+    await expect(page.getByTestId("plan-team-summary")).toBeVisible();
+    await expect(page.getByTestId("plan-times")).toBeVisible();
+    await expect(page.getByTestId("plan-notes")).toBeVisible();
+    await expect(page.getByTestId("service-order")).toHaveCount(0);
+
+    await page.getByTestId("plan-order-link").click();
+    await expect(page).toHaveURL(/\/serving\/plans\/PLA00000001\/order$/);
+    await expect(page.getByTestId("service-order")).toBeVisible({ timeout: 15000 });
+
+    await page.getByTestId("plan-back-link").click();
+    await page.getByTestId("plan-team-link").click();
+    await expect(page).toHaveURL(/\/serving\/plans\/PLA00000001\/team$/);
+    await expect(page.locator(".positionsTable")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("edit-plan-button")).toHaveCount(0);
   });
 });
 
@@ -476,8 +541,7 @@ test.describe("Copy plan from previous plan", () => {
     const newPlan = await (await copyPost).json();
 
     await page.goto("/serving/plans/" + newPlan.id);
-    await page.getByTestId("plan-notes-toggle").click();
-    await expect(page.getByTestId("plan-notes-input").locator("textarea").first()).toHaveValue("Upcoming worship services including special seasonal service", { timeout: 15000 });
+    await expect(page.getByTestId("plan-notes-text")).toHaveText("Upcoming worship services including special seasonal service", { timeout: 15000 });
   });
 });
 
@@ -503,6 +567,33 @@ test.describe("Copy plan forward", () => {
     await ctx.dispose();
   });
 
+  const openAddPlan = async (page: Page) => {
+    await page.goto("/serving/planTypes/PLT00000001");
+    const addBtn = page.getByTestId("add-plan-button").first();
+    await expect(addBtn).toBeVisible({ timeout: 15000 });
+    await addBtn.click();
+    await expect(page.getByTestId("copy-mode-select")).toBeVisible({ timeout: 10000 });
+  };
+
+  // A date far ahead of any other spec's, so a previous plan to copy from always exists.
+  const setServiceDate = async (page: Page, digits: string) => {
+    await page.getByRole("spinbutton", { name: "Month" }).click();
+    await page.keyboard.type(digits);
+  };
+
+  const selectOption = async (page: Page, testId: string, option: string) => {
+    await page.getByTestId(testId).locator('[role="combobox"]').click();
+    await page.getByRole("option", { name: option }).click();
+  };
+
+  const saveAndCollectCopies = (page: Page) => {
+    const copies: any[] = [];
+    page.on("response", async (r) => {
+      if (r.url().includes("/plans/copy/") && r.request().method() === "POST" && r.ok()) copies.push(await r.json());
+    });
+    return copies;
+  };
+
   test("repeat weekly creates one copied plan per week", async ({ page }) => {
     await page.goto("/serving/planTypes/PLT00000001");
     const addBtn = page.getByTestId("add-plan-button").first();
@@ -510,12 +601,9 @@ test.describe("Copy plan forward", () => {
     await addBtn.click();
     await expect(page.getByTestId("copy-mode-select")).toBeVisible({ timeout: 10000 });
     await expect(page.locator("#signupDeadlineHours")).toBeVisible();
-    await page.getByTestId("repeat-weeks-input").locator("input").fill("3");
+    await page.getByTestId("repeat-count-input").locator("input").fill("3");
 
-    const copies: any[] = [];
-    page.on("response", async (r) => {
-      if (r.url().includes("/plans/copy/") && r.request().method() === "POST" && r.ok()) copies.push(await r.json());
-    });
+    const copies = saveAndCollectCopies(page);
     await page.locator("button").getByText("Save").click();
     await expect.poll(() => copies.length, { timeout: 20000 }).toBe(3);
     createdPlanIds.push(...copies.map((c) => c.id));
@@ -524,6 +612,40 @@ test.describe("Copy plan forward", () => {
     expect(Math.round(days[1] - days[0])).toBe(7);
     expect(Math.round(days[2] - days[1])).toBe(7);
     expect(new Set(copies.map((c) => c.name)).size).toBe(3);
+  });
+
+  test("repeat every 2 weeks creates plans 14 days apart", async ({ page }) => {
+    await openAddPlan(page);
+    await page.getByTestId("repeat-interval-input").locator("input").fill("2");
+    await page.getByTestId("repeat-count-input").locator("input").fill("3");
+
+    const copies = saveAndCollectCopies(page);
+    await page.locator("button").getByText("Save").click();
+    await expect.poll(() => copies.length, { timeout: 20000 }).toBe(3);
+    createdPlanIds.push(...copies.map((c) => c.id));
+
+    const days = copies.map((c) => new Date(c.serviceDate).getTime() / 86400000);
+    expect(Math.round(days[1] - days[0])).toBe(14);
+    expect(Math.round(days[2] - days[1])).toBe(14);
+  });
+
+  test("repeat monthly on the nth weekday keeps the weekday and lists the dates before saving", async ({ page }) => {
+    await openAddPlan(page);
+    await setServiceDate(page, "11122033");
+    await selectOption(page, "repeat-frequency-select", "Month");
+    await selectOption(page, "repeat-month-mode-select", "Monthly on the second Saturday");
+    await page.getByTestId("repeat-count-input").locator("input").fill("6");
+    await expect(page.getByText("Nov 12, Dec 10, Jan 14, Feb 11, Mar 11, Apr 8")).toBeVisible();
+
+    const copies = saveAndCollectCopies(page);
+    await page.locator("button").getByText("Save").click();
+    await expect.poll(() => copies.length, { timeout: 30000 }).toBe(6);
+    createdPlanIds.push(...copies.map((c) => c.id));
+
+    const dates = copies.map((c) => new Date(c.serviceDate));
+    expect(dates.map((d) => d.getDay())).toEqual([6, 6, 6, 6, 6, 6]);
+    expect(dates.map((d) => Math.floor((d.getDate() - 1) / 7))).toEqual([1, 1, 1, 1, 1, 1]);
+    expect(dates.map((d) => d.getMonth())).toEqual([10, 11, 0, 1, 2, 3]);
   });
 
   test("copy from previous inside an empty plan fills that plan", async ({ page }) => {
@@ -541,7 +663,7 @@ test.describe("Copy plan forward", () => {
     const posRes = await ctx.post(`${API}/doing/positions`, { ...auth, data: [{ planId: sourceId, categoryName: "Band", name: "Copy Source Vocals", count: 1 }] });
     expect(posRes.ok()).toBeTruthy();
 
-    await page.goto(`/serving/plans/${planId}`);
+    await page.goto(`/serving/plans/${planId}/team`);
     await page.getByRole("button", { name: "Copy from Previous" }).click({ timeout: 20000 });
     const copyPost = page.waitForResponse(r => r.url().includes("/plans/copy/") && r.request().method() === "POST", { timeout: 15000 });
     await page.getByRole("menuitem", { name: "Positions Only" }).click();
@@ -616,7 +738,7 @@ test.describe("Service Order song search error handling", () => {
   test("a failed song search clears the spinner and reports the failure", async ({ page }) => {
     const failure = { status: 500, contentType: "application/json", body: JSON.stringify({ errors: ["Search timed out"] }) };
     await page.route("**/songs/search**", (route) => route.fulfill(failure));
-    await page.goto(`/serving/plans/${planId}`);
+    await page.goto(`/serving/plans/${planId}/order`);
     await expect(page.getByTestId("service-order")).toBeVisible({ timeout: 20000 });
     await expect(page.getByText("Song Search Section")).toBeVisible({ timeout: 20000 });
 
@@ -654,6 +776,18 @@ test.describe("Edit Plan Type locale", () => {
 
     await expect(dialog).not.toContainText("plans.planTypeReminders.");
     await expect(dialog.getByText("Reminders", { exact: true })).toBeVisible({ timeout: 10000 });
+  });
+
+  test("deleting a plan type asks a real question, not \"Confirm Delete\"", async ({ page }) => {
+    await page.goto("/serving/plans");
+    const row = page.locator("tr", { hasText: "Sunday Service" }).first();
+    await expect(row).toBeVisible({ timeout: 15000 });
+    await row.locator('button[aria-label="Edit"]').click();
+    await page.getByRole("dialog").getByRole("button", { name: "Delete", exact: true }).click();
+    const confirm = page.getByRole("dialog").filter({ hasText: "Are you sure you want to delete this plan type?" });
+    await expect(confirm).toBeVisible({ timeout: 10000 });
+    await confirm.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByRole("dialog").filter({ hasText: "Plan Type Details" })).toBeVisible();
   });
 });
 
@@ -734,7 +868,6 @@ test.describe.serial("Plan pickers honor First Day of Week", () => {
   // Full page loads only: useFirstDayOfWeek re-reads the church record on boot.
   const openTimePicker = async () => {
     await page.goto("/serving/plans/PLA00000001");
-    await page.getByTestId("plan-times-toggle").click();
     const addTime = page.locator('[data-testid="add-time-button"]');
     await expect(addTime).toBeVisible({ timeout: 15000 });
     await addTime.click();
@@ -823,7 +956,7 @@ test.describe.serial("Service Order bulk delete inside a section", () => {
     const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
     page = await context.newPage();
     await login(page);
-    await page.goto(`/serving/plans/${planId}`);
+    await page.goto(`/serving/plans/${planId}/order`);
     await expect(page.getByTestId("service-order")).toBeVisible({ timeout: 20000 });
   });
 
@@ -961,7 +1094,7 @@ test.describe.serial("Service Order multi-select import from the External Item p
     await page.route("**/providerProxy/getInstructions", (route) => route.fulfill({ json: INSTRUCTIONS }));
     await page.route("**/lessons.church/**", (route) => route.abort());
 
-    await page.goto(`/serving/plans/${planId}`);
+    await page.goto(`/serving/plans/${planId}/order`);
     await expect(page.getByTestId("service-order")).toBeVisible({ timeout: 20000 });
   });
 
@@ -1079,7 +1212,6 @@ test.describe.serial("Service Order heading position per service time", () => {
 
     // The demo plan ships with one service time; a second one is what makes the
     // per-service choice meaningful (and is what the "Include in services" list needs).
-    await page.getByTestId("plan-times-toggle").click();
     const addTime = page.locator('[data-testid="add-time-button"]');
     await expect(addTime).toBeVisible({ timeout: 15000 });
     await addTime.click();
@@ -1087,6 +1219,7 @@ test.describe.serial("Service Order heading position per service time", () => {
     await page.locator("button").getByText("Save").last().click();
     await expect(page.locator("td button").getByText("Second Service")).toHaveCount(1, { timeout: 15000 });
 
+    await page.getByTestId("plan-order-link").click();
     await expect(page.getByTestId("service-order")).toBeVisible({ timeout: 15000 });
 
     const worshipHeader = page.locator(".planItemHeader").filter({ hasText: "Worship" }).first();
@@ -1120,6 +1253,30 @@ test.describe.serial("Service Order heading position per service time", () => {
     await page.getByRole("option", { name: /Sunday Service/ }).click();
     await expect(worshipHeader.locator(".planItemPosition")).toHaveText(DEFAULT_VOLUNTEER, { timeout: 15000 });
   });
+});
+
+// ChurchAppsSupport#1312: the Set up FreePlay wizard's Create & Continue opened the Plans page on
+// the first ministry, not the new one. Kept outside the serial chain: its /planTypes route would
+// empty classrooms for every later test on the shared page.
+loggedInTest("FreePlay wizard opens the Plans page on the ministry it created", async ({ page }) => {
+  // Demo data already has classrooms; with none listed the palette offers the wizard.
+  await page.route(/\/planTypes(\?.*)?$/, (route) => (route.request().method() === "GET" ? route.fulfill({ json: [] }) : route.fallback()));
+  const ministryName = "Issue1312 Ministry " + Date.now();
+
+  await page.getByTestId("command-palette-open").click();
+  const palette = page.getByTestId("command-palette");
+  await palette.getByRole("textbox").fill("FreePlay");
+  await palette.getByRole("button", { name: /FreePlay/ }).first().click();
+
+  const dialog = page.getByRole("dialog", { name: "Set Up Your FreePlay Classroom" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("Ministry Name").fill(ministryName);
+  await dialog.getByLabel("Classroom Name").fill("Room 1");
+  await dialog.getByRole("button", { name: "Create & Continue" }).click();
+
+  await page.waitForURL(/\/serving\/plans/, { timeout: 15000 });
+  await expect(page.getByRole("tab", { name: ministryName })).toHaveAttribute("aria-selected", "true", { timeout: 15000 });
+  await expect(page.locator("#page-header-title")).toHaveText(ministryName);
 });
 
 // ChurchAppsSupport#1128: a position with no Volunteer Group left the assignment panel on
@@ -1176,7 +1333,7 @@ test.describe.serial("Assign a position directly to a person", () => {
   const positionRow = (name: string) => page.locator("tr:not(:has(tr))").filter({ has: page.locator("button", { hasText: name }) });
 
   test("a position with no Volunteer Group can be assigned to anyone in the church", async () => {
-    await page.goto(DEMO_PLAN);
+    await page.goto(DEMO_PLAN + "/team");
     const row = positionRow(GROUPLESS);
     await expect(row).toHaveCount(1, { timeout: 15000 });
     await row.getByRole("button", { name: /1 person needed/i }).click();
@@ -1186,14 +1343,14 @@ test.describe.serial("Assign a position directly to a person", () => {
     await expect(page.getByText("No group members found.")).toHaveCount(0);
     await search.fill("Donald");
     await page.locator('[data-testid="search-button"]').click();
-    await page.getByRole("button", { name: "Donald Clark", exact: true }).click();
+    await page.getByRole("button", { name: /Donald Clark/ }).click();
 
     await expect(row.getByRole("button", { name: /Donald Clark/ })).toBeVisible({ timeout: 15000 });
     await expect(row.getByText("1/1")).toBeVisible();
   });
 
   test("a linked Volunteer Group can be cleared back to None", async () => {
-    await page.goto(DEMO_PLAN);
+    await page.goto(DEMO_PLAN + "/team");
     const row = positionRow(GROUPED);
     await expect(row).toHaveCount(1, { timeout: 15000 });
     await row.getByRole("button", { name: GROUPED }).click();
@@ -1203,6 +1360,8 @@ test.describe.serial("Assign a position directly to a person", () => {
     await groupSelect.click();
     await page.getByRole("option", { name: "None", exact: true }).click();
     await page.locator("button").getByText("Save").last().click();
+    // The save callback closes the edit panel; clicking a row before then gets that panel closed too.
+    await expect(groupSelect).toHaveCount(0, { timeout: 15000 });
 
     // Back to direct assignment: the panel offers the whole-church search, not the team roster.
     await positionRow(GROUPED).getByRole("button", { name: /1 person needed/i }).click();
@@ -1303,5 +1462,256 @@ test.describe("Plan list empty Past tab", () => {
     await expect(page.getByTestId("plans-past-pill")).toBeVisible();
     await page.getByTestId("plans-upcoming-pill").click();
     await expect(page.getByRole("link", { name: "Empty Past Week One" })).toBeVisible({ timeout: 15000 });
+  });
+});
+
+// GO! Curriculum (and every provider built on filesToInstructions) returns a flat list of play actions, so
+// Customize must wrap them in a lesson section bar; Add From Lesson must list a provider folder's files.
+// Providers are mocked at the API proxy, since no content provider is linked in the local stack.
+test.describe("Service Order customized flat lessons and Add From Lesson files", () => {
+  const API = process.env.API_BASE || "http://localhost:8084";
+  const MINISTRY_ID = "GRP0000000a";
+  const FLAT_INSTRUCTIONS = {
+    name: "Angels Big Announcement",
+    items: [
+      { id: "GOACT1", itemType: "action", relatedId: "GOACT1", label: "House Title Slide", actionType: "play", children: [{ id: "GOFILE1", itemType: "file", label: "House Title Slide", downloadUrl: "https://example.com/title.jpg" }] },
+      { id: "GOACT2", itemType: "action", relatedId: "GOACT2", label: "Tophers Big Idea", actionType: "play", children: [{ id: "GOFILE2", itemType: "file", label: "Tophers Big Idea", downloadUrl: "https://example.com/idea.mp4" }] }
+    ]
+  };
+  const BROWSE_ITEMS = [
+    { type: "folder", id: "DBXSUB1", title: "Archive", path: "/worship/archive", isLeaf: false },
+    { type: "file", id: "DBXFILE1", title: "This Weeks Song.mp4", mediaType: "video", url: "https://example.com/song.mp4", downloadUrl: "https://example.com/song.mp4" }
+  ];
+  let ctx: APIRequestContext;
+  let jwt: string;
+  let planId: string;
+
+  test.beforeEach(async () => {
+    ctx = await pwRequest.newContext();
+    const loginRes = await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+    expect(loginRes.ok()).toBeTruthy();
+    const body = await loginRes.json();
+    const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+    expect(uc?.jwt).toBeTruthy();
+    jwt = uc.jwt as string;
+    const planRes = await ctx.post(`${API}/doing/plans`, {
+      headers: { Authorization: "Bearer " + jwt },
+      data: [
+        {
+          name: "GO Lesson Repro Plan",
+          serviceDate: "2030-07-01",
+          ministryId: MINISTRY_ID,
+          planTypeId: "PLT00000001",
+          serviceOrder: true,
+          providerId: "gocurriculum",
+          providerPlanId: "/go/angels-big-announcement",
+          providerPlanName: "Angels Big Announcement"
+        }
+      ]
+    });
+    expect(planRes.ok()).toBeTruthy();
+    planId = (await planRes.json())[0].id;
+  });
+
+  test.afterEach(async () => {
+    if (planId) await ctx.delete(`${API}/doing/plans/${planId}`, { headers: { Authorization: "Bearer " + jwt } });
+    await ctx.dispose();
+  });
+
+  test("customizing a flat lesson puts its items under a lesson section bar", async ({ page }) => {
+    await page.route("**/providerProxy/getInstructions", (route) => route.fulfill({ json: FLAT_INSTRUCTIONS }));
+
+    await page.goto(`/serving/plans/${planId}/order`);
+    await expect(page.getByTestId("service-order")).toBeVisible({ timeout: 20000 });
+    await page.getByRole("button", { name: "Customize" }).click();
+
+    await expect(page.locator(".planItem").filter({ hasText: "House Title Slide" })).toHaveCount(1, { timeout: 15000 });
+    await expect(page.locator(".planItemHeader").filter({ hasText: "Angels Big Announcement" })).toHaveCount(1);
+  });
+
+  test("Add From Lesson lists the files in a provider folder and adds a clicked one", async ({ page }) => {
+    await page.route("**/providerProxy/getInstructions", (route) => route.fulfill({ json: FLAT_INSTRUCTIONS }));
+    await page.route("**/providerProxy/browse", (route) => route.fulfill({ json: BROWSE_ITEMS }));
+    await page.route(`**/contentProviderAuths/ministry/${MINISTRY_ID}`, (route) => route.fulfill({ json: [{ id: "CPA1", ministryId: MINISTRY_ID, providerId: "gocurriculum" }] }));
+
+    await page.goto(`/serving/plans/${planId}/order`);
+    await expect(page.getByTestId("service-order")).toBeVisible({ timeout: 20000 });
+    await page.getByRole("button", { name: "More ways to add" }).click();
+    await page.getByRole("menuitem", { name: /Add from Lesson/i }).click();
+    await page.getByRole("button", { name: "Browse Other Providers" }).click();
+
+    const fileCard = page.getByTestId("browse-file-card").filter({ hasText: "This Weeks Song.mp4" });
+    await expect(fileCard).toBeVisible({ timeout: 15000 });
+    await fileCard.click();
+    await expect(page.locator(".planItem").filter({ hasText: "This Weeks Song.mp4" })).toHaveCount(1, { timeout: 15000 });
+  });
+});
+
+test.describe("Clear a plan's signup deadline", () => {
+  const API = process.env.API_BASE || "http://localhost:8084";
+  let ctx: APIRequestContext;
+  let auth: { headers: { Authorization: string } };
+  let planId = "";
+
+  test.beforeAll(async () => {
+    ctx = await pwRequest.newContext();
+    const loginRes = await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+    expect(loginRes.ok()).toBeTruthy();
+    const body = await loginRes.json();
+    const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+    auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+    const planRes = await ctx.post(`${API}/doing/plans`, {
+      ...auth,
+      data: [{ name: "Signup Deadline Clear", serviceDate: "2033-03-06", ministryId: "GRP0000000a", planTypeId: "PLT00000001", signupDeadlineHours: 24 }]
+    });
+    expect(planRes.ok()).toBeTruthy();
+    planId = (await planRes.json())[0].id;
+  });
+
+  test.afterAll(async () => {
+    if (planId) await ctx.delete(`${API}/doing/plans/${planId}`, auth);
+    await ctx.dispose();
+  });
+
+  test("blanking the deadline saves null and stays blank", async ({ page }) => {
+    await page.goto(`/serving/plans/${planId}?view=edit`);
+    const deadline = page.locator("#signupDeadlineHours");
+    await expect(deadline).toHaveValue("24", { timeout: 15000 });
+    await deadline.fill("");
+
+    const savePost = page.waitForRequest((r) => r.method() === "POST" && new URL(r.url()).pathname.endsWith("/doing/plans"), { timeout: 15000 });
+    await page.locator("button").getByText("Save").click();
+    const body = (await savePost).postDataJSON();
+    expect(Array.isArray(body)).toBeTruthy();
+    expect(body[0]).toHaveProperty("signupDeadlineHours", null);
+
+    await expect.poll(async () => (await (await ctx.get(`${API}/doing/plans/${planId}`, auth)).json()).signupDeadlineHours ?? null, { timeout: 15000 }).toBeNull();
+    await page.goto(`/serving/plans/${planId}?view=edit`);
+    await expect(page.getByTestId("plan-name-input").locator("input")).toHaveValue("Signup Deadline Clear", { timeout: 15000 });
+    await expect(page.locator("#signupDeadlineHours")).toHaveValue("");
+  });
+});
+
+// #1401: customize one lesson, then save what was kept as the plan type's lesson trim so every lesson
+// scheduled into it comes out trimmed. The browser's lesson read is mocked; the Api has no GO! login on the
+// local stack, so lessons it trims itself report that it couldn't read them, which exercises the warning path.
+test.describe.serial("Lesson trim reused for every lesson in a plan type", () => {
+  test.describe.configure({ retries: 0 });
+  const API = process.env.API_BASE || "http://localhost:8084";
+  const MINISTRY_ID = "GRP0000000a";
+  const PLAN_TYPE_NAME = "Elementary Trim " + Date.now().toString().slice(-6);
+  const GO_LESSON = {
+    name: "Every Good Gift",
+    items: [
+      { id: "lg-0", itemType: "section", label: "Opening", children: [{ id: "lg-0-0", itemType: "action", actionType: "play", label: "Play the countdown", children: [{ id: "f0", itemType: "file", label: "Countdown", downloadUrl: "https://example.com/countdown.mp4" }] }] },
+      { id: "lg-1", itemType: "section", label: "The Fab Five Intro", children: [{ id: "lg-1-0", itemType: "action", actionType: "say", label: "Read this aloud" }] },
+      { id: "lg-2", itemType: "section", label: "Journey Today Show", children: [{ id: "lg-2-0", itemType: "action", actionType: "play", label: "Watch", children: [{ id: "f2", itemType: "file", label: "Journey Today", downloadUrl: "https://example.com/journey.mp4" }] }] },
+      { id: "lg-3", itemType: "section", label: "Big Bible Story Questions", children: [{ id: "lg-3-0", itemType: "action", actionType: "play", label: "Show", children: [{ id: "f3", itemType: "file", label: "Questions", downloadUrl: "https://example.com/q.png" }] }] },
+      { id: "lg-4", itemType: "section", label: "Giving God the Glory", children: [{ id: "lg-4-0", itemType: "action", actionType: "say", label: "Pray together" }] }
+    ]
+  };
+  let ctx: APIRequestContext;
+  let auth: { headers: { Authorization: string } };
+  let planTypeId = "";
+  const planIds: string[] = [];
+
+  const createLesson = async (name: string, serviceDate: string, path: string) => {
+    const res = await ctx.post(`${API}/doing/plans`, {
+      ...auth,
+      data: [{ name, serviceDate, ministryId: MINISTRY_ID, planTypeId, serviceOrder: true, providerId: "gocurriculum", providerPlanId: path, providerPlanName: name }]
+    });
+    expect(res.ok()).toBeTruthy();
+    const plan = (await res.json())[0];
+    planIds.push(plan.id);
+    return plan;
+  };
+
+  test.beforeAll(async () => {
+    ctx = await pwRequest.newContext();
+    const loginRes = await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+    expect(loginRes.ok()).toBeTruthy();
+    const body = await loginRes.json();
+    const uc = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches?.[0];
+    auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+    const typeRes = await ctx.post(`${API}/doing/planTypes`, { ...auth, data: [{ ministryId: MINISTRY_ID, name: PLAN_TYPE_NAME }] });
+    expect(typeRes.ok()).toBeTruthy();
+    planTypeId = (await typeRes.json())[0].id;
+    await createLesson("GO Trim Nov 1", "2030-11-03", "/elementary/series/nov-1");
+    await createLesson("GO Trim Nov 8", "2030-11-10", "/elementary/series/nov-8");
+  });
+
+  test.afterAll(async () => {
+    for (const id of planIds) await ctx.delete(`${API}/doing/plans/${id}`, auth);
+    if (planTypeId) await ctx.delete(`${API}/doing/planTypes/${planTypeId}`, auth);
+    await ctx.dispose();
+  });
+
+  test("a customized lesson's kept parts become the plan type's trim", async ({ page }) => {
+    await page.route("**/providerProxy/getInstructions", (route) => route.fulfill({ json: GO_LESSON }));
+    await page.goto(`/serving/plans/${planIds[0]}/order`);
+    await expect(page.getByTestId("service-order")).toBeVisible({ timeout: 20000 });
+    await expect(page.getByTestId("lesson-trim-link")).toHaveCount(0);
+    await page.getByRole("button", { name: "Customize" }).click();
+    const loadRows = async () => (await (await ctx.get(`${API}/doing/planItems/plan/${planIds[0]}`, auth)).json()) as any[];
+    await expect.poll(async () => (await loadRows())[0]?.children?.length || 0, { timeout: 15000 }).toBe(5);
+
+    // Delete the read-aloud sections, as the church does by hand every week today.
+    const rows = await loadRows();
+    for (const s of rows[0].children.filter((r: any) => ["The Fab Five Intro", "Giving God the Glory"].includes(r.label))) {
+      expect((await ctx.delete(`${API}/doing/planItems/${s.id}`, auth)).ok()).toBeTruthy();
+    }
+    await page.reload();
+
+    const link = page.getByTestId("lesson-trim-link");
+    await expect(link).toHaveText(`Use this for every lesson in ${PLAN_TYPE_NAME}`, { timeout: 20000 });
+    await link.click();
+    const dialog = page.getByTestId("lesson-trim-dialog");
+    await expect(dialog.getByTestId("lesson-trim-keeps").getByRole("listitem")).toHaveText(["Opening", "Journey Today Show", "Big Bible Story Questions"], { timeout: 15000 });
+    await expect(dialog.getByLabel("Also trim the upcoming lesson already scheduled")).toBeChecked();
+    await dialog.getByRole("button", { name: "Save" }).click();
+
+    // The other lesson was re-trimmed on the Api, which can't read GO! locally, so it is flagged rather than trimmed silently.
+    await expect(page.getByTestId("lesson-trim-saved")).toContainText("Check these plans before Sunday: GO Trim Nov 8", { timeout: 20000 });
+    await expect(page.getByTestId("lesson-trim-link")).toHaveText(`Replace the saved trim for ${PLAN_TYPE_NAME}`);
+
+    const planType = await (await ctx.get(`${API}/doing/planTypes/${planTypeId}`, auth)).json();
+    expect(JSON.parse(planType.lessonTrim).keep.map((k: any) => k.section)).toEqual(["Opening", "Journey Today Show", "Big Bible Story Questions"]);
+  });
+
+  test("a lesson scheduled into the plan type is trimmed on save and a miss is flagged in the plan list", async ({ page }) => {
+    const plan = await createLesson("GO Trim Nov 15", "2030-11-17", "/elementary/series/nov-15");
+    expect(plan.lessonTrimWarning).toBe("Couldn't read the lesson to apply the saved trim");
+
+    await page.goto(`/serving/planTypes/${planTypeId}`);
+    const row = page.locator("tr", { hasText: "GO Trim Nov 15" });
+    await expect(row.getByTestId("plan-lesson-trim-warning")).toContainText("Couldn't read the lesson to apply the saved trim", { timeout: 20000 });
+    const savedFrom = page.locator("tr").filter({ has: page.getByRole("link", { name: "GO Trim Nov 1", exact: true }) });
+    await expect(savedFrom.getByTestId("plan-lesson-trim-warning")).toHaveCount(0);
+  });
+
+  test("the plan page warns about a flagged lesson until dismissed", async ({ page }) => {
+    await page.route("**/providerProxy/getInstructions", (route) => route.fulfill({ json: GO_LESSON }));
+    await page.goto(`/serving/plans/${planIds[1]}`);
+    const banner = page.getByTestId("lesson-trim-warning");
+    await expect(banner).toContainText("Couldn't read the lesson to apply the saved trim. Check the order of service before Sunday.", { timeout: 20000 });
+    await banner.getByRole("button", { name: "Dismiss" }).click();
+    await expect(banner).toHaveCount(0);
+    const plan = await (await ctx.get(`${API}/doing/plans/${planIds[1]}`, auth)).json();
+    expect(plan.lessonTrimWarning).toBeNull();
+  });
+
+  test("the plan type dialog shows the saved trim and clears it", async ({ page }) => {
+    await page.goto("/serving/plans");
+    const worshipTab = page.locator('[role="tab"]').getByText("Worship").first();
+    if (await worshipTab.count() > 0) await worshipTab.click();
+    const row = page.locator("tr", { hasText: PLAN_TYPE_NAME });
+    await expect(row).toBeVisible({ timeout: 15000 });
+    await row.getByRole("button", { name: "Edit", exact: true }).click();
+    const status = page.getByTestId("lesson-trim-status");
+    await expect(status).toContainText("Lesson trim: 3 parts kept, saved from GO Trim Nov 1", { timeout: 10000 });
+    await status.getByText("Clear").click();
+    await expect(status).toHaveCount(0);
+    const planType = await (await ctx.get(`${API}/doing/planTypes/${planTypeId}`, auth)).json();
+    expect(planType.lessonTrim).toBeNull();
   });
 });

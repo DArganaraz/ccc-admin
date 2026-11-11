@@ -2,9 +2,9 @@ import React, { type CSSProperties, useEffect, useRef, useState } from "react";
 import type { ElementInterface, SectionInterface } from "../../helpers";
 import { ApiHelper } from "../../helpers";
 import { Locale } from "@churchapps/apphelper";
-import { StyleHelper } from "@churchapps/apphelper/website";
+import { StyleHelper, Element } from "../apphelperWebsite";
 import { Box, Container } from "@mui/material";
-import { DraggableWrapper, YoutubeBackground, DroppableArea, Element, SectionDivider, parseDividerConfig } from "@churchapps/apphelper/website";
+import { DraggableWrapper, YoutubeBackground, DroppableArea, SectionDivider, parseDividerConfig } from "@churchapps/apphelper/website";
 import type { ChurchInterface } from "@churchapps/helpers";
 import { ElementTypes } from "@churchapps/helpers";
 import { ElementSelection } from "./ElementSelection";
@@ -512,7 +512,7 @@ export const Section: React.FC<Props> = props => {
   if (props.section.background && props.section.background.indexOf("youtube:") > -1) {
     const youtubeId = props.section.background.split(":")[1];
     result = (<>{getSectionAnchor()}<YoutubeBackground isDragging={isDragging} id={getId()} videoId={youtubeId} overlay="rgba(0,0,0,.4)" contentClassName={getVideoClassName() + ((topDivider || bottomDivider) ? " sectionWithDivider" : "")}>{getDividers()}{contents}</YoutubeBackground></>);
-  } else result = (<>{getSectionAnchor()}<Box component="div" sx={{ "&&:before": { opacity: props.section.answers?.backgroundOpacity || "" } }} style={getStyle()} className={getClassName()} id={getId()}>{getDividers()}{contents}</Box></>);
+  } else result = (<>{getSectionAnchor()}<Box component="div" sx={{ "&&:before": { opacity: props.section.answers?.backgroundOpacity ? props.section.answers.backgroundOpacity + " !important" : "", background: props.section.answers?.overlayColor ? props.section.answers.overlayColor + " !important" : "" } }} style={getStyle()} className={getClassName()} id={getId()}>{getDividers()}{contents}</Box></>);
 
   if (props.onEdit) {
     return (

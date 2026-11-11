@@ -5,6 +5,9 @@ import { Box, Link, Stack, Typography } from "@mui/material";
 import { DateHelper, Loading, Locale, Permissions, UserHelper } from "@churchapps/apphelper";
 import { type EventInterface, type GroupInterface, type GroupJoinRequestInterface, type GroupMemberInterface } from "@churchapps/helpers";
 import { RecordHeading, TextAction, VerbRow, filterChipSx } from "../../components/ui";
+import { useContentConversation } from "../../components/ContentNotes";
+import { PersonNotesSummary } from "../../people/components/PersonSummaries";
+import { canRecordAttendance } from "../../helpers";
 
 interface SessionRow {
   id?: string;
@@ -16,6 +19,13 @@ interface GroupHealthData {
   memberCount: number;
   joins90: number;
   leaves90: number;
+}
+
+interface LinkedForm {
+  id: string;
+  name: string;
+  description?: string;
+  open: boolean;
 }
 
 interface Props {
@@ -47,12 +57,22 @@ const plural = (count: number, one: string, many: string) => `${count} ${count =
 export const GroupPlate = ({ group, onView, onEnableAttendance }: Props) => {
   const isStandard = (group?.tags?.indexOf("standard") ?? -1) > -1;
   const canViewMembers = UserHelper.checkAccess(Permissions.membershipApi.groupMembers.view);
+  const canOpenProfile = UserHelper.checkAccess(Permissions.membershipApi.people.view);
+  const canSeeRoster = canViewMembers || canRecordAttendance();
   const canEditGroup = UserHelper.checkAccess(Permissions.membershipApi.groups.edit);
   const trackAttendance = !!group?.trackAttendance;
 
   const members = useQuery<GroupMemberInterface[]>({
     queryKey: [`/groupmembers?groupId=${group?.id}`, "MembershipApi"],
-    enabled: !!group?.id && canViewMembers
+    enabled: !!group?.id
+  });
+  const canViewNotes = !!members.data?.some((m) => m.leader && m.personId === UserHelper.person?.id);
+  const noteConversations = useContentConversation("groupNote", canViewNotes ? group?.id : undefined);
+
+  const isFormsAdmin = UserHelper.checkAccess(Permissions.membershipApi.forms.admin);
+  const linkedForms = useQuery<LinkedForm[]>({
+    queryKey: [`/forms/group/${group?.id}`, "MembershipApi"],
+    enabled: !!group?.id && (canViewNotes || isFormsAdmin)
   });
 
   const pending = useQuery<GroupJoinRequestInterface[]>({
@@ -109,18 +129,24 @@ export const GroupPlate = ({ group, onView, onEnableAttendance }: Props) => {
     return (
       <Stack spacing={1.5}>
         <Box component="ul" aria-label={Locale.label("groups.groupNavigation.members")} sx={{ display: "flex", flexWrap: "wrap", gap: 1, listStyle: "none", m: 0, p: 0 }}>
-          {people.slice(0, PREVIEW_COUNT).map((m) => (
-            <Box component="li" key={m.id}>
-              <Link
-                component={RouterLink}
-                to={"/people/" + m.personId}
-                underline="none"
-                sx={{ ...filterChipSx(false), display: "inline-flex", alignItems: "center", gap: 0.75, minHeight: { xs: 36, md: 36 } }}>
+          {people.slice(0, PREVIEW_COUNT).map((m) => {
+            const nameSx = { ...filterChipSx(false), display: "inline-flex", alignItems: "center", gap: 0.75, minHeight: { xs: 36, md: 36 } };
+            const nameText = (
+              <>
                 {m.person?.name?.display || Locale.label("groups.groupMembers.unknown")}
                 {m.leader && <Typography component="span" variant="caption" color="text.secondary">{Locale.label("groups.groupMembers.leader")}</Typography>}
-              </Link>
-            </Box>
-          ))}
+              </>
+            );
+            return (
+              <Box component="li" key={m.id}>
+                {canOpenProfile ? (
+                  <Link component={RouterLink} to={"/people/" + m.personId} underline="none" sx={nameSx}>{nameText}</Link>
+                ) : (
+                  <Box sx={nameSx}>{nameText}</Box>
+                )}
+              </Box>
+            );
+          })}
         </Box>
         <VerbRow>
           <span>{plural(people.length, Locale.label("groups.groupMembers.member"), Locale.label("groups.groupMembers.members"))}</span>
@@ -191,6 +217,29 @@ export const GroupPlate = ({ group, onView, onEnableAttendance }: Props) => {
     );
   };
 
+  const formRows = linkedForms.data || [];
+
+  const formsBody = () => (
+    <Stack spacing={1}>
+      {formRows.map((f) => (
+        <Box key={f.id} sx={{ display: "flex", alignItems: "baseline", gap: 1 }} data-testid={`group-linked-form-${f.id}`}>
+          {isFormsAdmin ? (
+            <Link component={RouterLink} to={"/forms/" + f.id} variant="body1">{f.name}</Link>
+          ) : (
+            <Typography variant="body1">{f.name}</Typography>
+          )}
+          <Typography component="span" variant="caption" color="text.secondary">
+            {f.open ? Locale.label("groups.groupRecord.formOpen", "Open") : Locale.label("groups.groupRecord.formClosed", "Closed")}
+          </Typography>
+        </Box>
+      ))}
+      <VerbRow>
+        <span>{plural(formRows.length, Locale.label("groups.groupRecord.formCountOne", "form"), Locale.label("groups.groupRecord.formCount", "forms"))}</span>
+        {isFormsAdmin && <TextAction small component={RouterLink} to="/forms" data-testid="group-all-forms">{Locale.label("groups.groupRecord.allForms", "All forms")}</TextAction>}
+      </VerbRow>
+    </Stack>
+  );
+
   const healthBody = () => {
     if (health.isLoading) return <Loading size="sm" />;
     if (!health.data) return <VerbRow>{healthVerb}</VerbRow>;
@@ -210,7 +259,7 @@ export const GroupPlate = ({ group, onView, onEnableAttendance }: Props) => {
   return (
     <>
       <Section id="group-plate-members" title={Locale.label("groups.groupNavigation.members")} testId="group-plate-members">
-        {canViewMembers ? membersBody() : <VerbRow>{allMembers}</VerbRow>}
+        {canSeeRoster ? membersBody() : <VerbRow>{allMembers}</VerbRow>}
       </Section>
       {isStandard && (
         <Section id="group-plate-sessions" title={Locale.label("groups.groupNavigation.sessions")} testId="group-plate-sessions">
@@ -220,6 +269,16 @@ export const GroupPlate = ({ group, onView, onEnableAttendance }: Props) => {
       {isStandard && (
         <Section id="group-plate-calendar" title={Locale.label("groups.groupNavigation.calendar")} testId="group-plate-calendar">
           {calendarBody()}
+        </Section>
+      )}
+      {formRows.length > 0 && (
+        <Section id="group-plate-forms" title={Locale.label("groups.groupNavigation.forms", "Linked forms")} testId="group-plate-forms">
+          {formsBody()}
+        </Section>
+      )}
+      {canViewNotes && (
+        <Section id="group-plate-notes" title={Locale.label("groups.groupNavigation.notes", "Leader notes")} testId="group-plate-notes">
+          <PersonNotesSummary conversationId={noteConversations.data?.[0]?.id || ""} onViewAll={() => onView("notes")} />
         </Section>
       )}
       {isStandard && canViewMembers && (

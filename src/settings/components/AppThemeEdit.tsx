@@ -1,5 +1,5 @@
 import React from "react";
-import { TextField, Grid, Typography, Box, Stack, Button, Accordion, AccordionSummary, AccordionDetails } from "@mui/material";
+import { TextField, Grid, Typography, Box, Stack, Button, Snackbar, Accordion, AccordionSummary, AccordionDetails } from "@mui/material";
 import { ExpandMore } from "@mui/icons-material";
 import { ApiHelper, Locale } from "@churchapps/apphelper";
 import { FormCard } from "../../components/ui";
@@ -43,6 +43,8 @@ export const AppThemeEdit: React.FC = () => {
   const [themeConfig, setThemeConfig] = React.useState<AppThemeConfig>({ ...DEFAULT_THEME });
   const [setting, setSetting] = React.useState<GenericSettingInterface | null>(null);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const [showSaved, setShowSaved] = React.useState(false);
+  const [hexDrafts, setHexDrafts] = React.useState<Record<string, string>>({});
 
   const loadData = React.useCallback(async () => {
     try {
@@ -69,6 +71,7 @@ export const AppThemeEdit: React.FC = () => {
       const s: GenericSettingInterface = setting || { keyName: "appTheme", public: 1 };
       s.value = JSON.stringify(themeConfig);
       await ApiHelper.post("/settings", [s], "MembershipApi");
+      setShowSaved(true);
       await loadData();
     } catch (error) {
       console.error("Error saving app theme:", error);
@@ -79,10 +82,26 @@ export const AppThemeEdit: React.FC = () => {
 
   const handleReset = () => {
     setThemeConfig({ ...DEFAULT_THEME });
+    setHexDrafts({});
   };
 
   const updateColor = (mode: "light" | "dark", key: keyof AppThemeModeColors, value: string) => {
     setThemeConfig(prev => ({ ...prev, [mode]: { ...prev[mode], [key]: value } }));
+  };
+
+  // Keep the typed text as a draft so half-typed values aren't fought; the swatch follows once it is a full hex.
+  const handleHexChange = (mode: "light" | "dark", key: keyof AppThemeModeColors, value: string) => {
+    setHexDrafts(prev => ({ ...prev, [`${mode}.${key}`]: value }));
+    const hex = value.trim();
+    if (/^#?[0-9a-f]{6}$/i.test(hex)) updateColor(mode, key, "#" + hex.replace("#", "").toLowerCase());
+  };
+
+  const handleHexBlur = (mode: "light" | "dark", key: keyof AppThemeModeColors) => {
+    setHexDrafts(prev => {
+      const next = { ...prev };
+      delete next[`${mode}.${key}`];
+      return next;
+    });
   };
 
   const colorField = (mode: "light" | "dark", label: string, key: keyof AppThemeModeColors) => (
@@ -96,7 +115,15 @@ export const AppThemeEdit: React.FC = () => {
           sx={{ width: 120, "& .MuiInputBase-input": { height: 36 } }}
           size="small"
         />
-        <Typography variant="body2" color="text.secondary" sx={{ fontFamily: "monospace" }}>{themeConfig[mode][key]}</Typography>
+        <TextField
+          label={Locale.label("settings.appThemeEdit.hex")}
+          value={hexDrafts[`${mode}.${key}`] ?? themeConfig[mode][key]}
+          onChange={e => handleHexChange(mode, key, e.target.value)}
+          onBlur={() => handleHexBlur(mode, key)}
+          sx={{ width: 120, "& input": { fontFamily: "monospace" } }}
+          size="small"
+          slotProps={{ htmlInput: { maxLength: 7, "data-testid": `app-theme-hex-${mode}-${key}` } }}
+        />
       </Stack>
     </Grid>
   );
@@ -142,15 +169,18 @@ export const AppThemeEdit: React.FC = () => {
   );
 
   return (
-    <FormCard title={Locale.label("common.appTheme")} icon="palette" onSave={handleSave} isSubmitting={isSubmitting}>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        {Locale.label("mobile.appThemeEdit.description")}
-      </Typography>
-      <Box sx={{ mb: 2 }}>
-        <Button variant="outlined" size="small" onClick={handleReset}>{Locale.label("mobile.appThemeEdit.resetDefaults")}</Button>
-      </Box>
-      {modeSection("light", Locale.label("mobile.appThemeEdit.lightMode"))}
-      {modeSection("dark", Locale.label("mobile.appThemeEdit.darkMode"))}
-    </FormCard>
+    <>
+      <FormCard title={Locale.label("common.appTheme")} icon="palette" onSave={handleSave} isSubmitting={isSubmitting}>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          {Locale.label("mobile.appThemeEdit.description")}
+        </Typography>
+        <Box sx={{ mb: 2 }}>
+          <Button variant="outlined" size="small" onClick={handleReset}>{Locale.label("mobile.appThemeEdit.resetDefaults")}</Button>
+        </Box>
+        {modeSection("light", Locale.label("mobile.appThemeEdit.lightMode"))}
+        {modeSection("dark", Locale.label("mobile.appThemeEdit.darkMode"))}
+      </FormCard>
+      <Snackbar open={showSaved} autoHideDuration={3000} onClose={() => setShowSaved(false)} message={Locale.label("common.saved")} anchorOrigin={{ vertical: "bottom", horizontal: "center" }} />
+    </>
   );
 };

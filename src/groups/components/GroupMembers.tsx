@@ -18,6 +18,7 @@ import {
 } from "@churchapps/apphelper";
 import { useQuery } from "@tanstack/react-query";
 import { Link as RouterLink } from "react-router-dom";
+import { canRecordAttendance } from "../../helpers";
 import {
   Alert,
   Box,
@@ -56,6 +57,11 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { AppIconButton } from "../../components/ui/AppIconButton";
 import { ExportButton, StatusBadge } from "../../components/ui";
 import { useConfirmDelete } from "../../hooks";
+import { useCanPrintRoster } from "../../helpers";
+
+// On a phone the avatar column gives way so the leader and remove buttons stay on screen.
+const avatarCellSx = { width: 56, display: { xs: "none", sm: "table-cell" } };
+const roleCellSx = { width: { xs: "auto", sm: 120 } };
 
 interface Props {
   group: GroupInterface;
@@ -75,13 +81,16 @@ export const GroupMembers: React.FC<Props> = memo((props) => {
   const [sendSuccess, setSendSuccess] = useState<boolean>(false);
   const [printAnchor, setPrintAnchor] = useState<HTMLElement | null>(null);
   const { confirm, ConfirmDialogElement } = useConfirmDelete();
+  const canPrintRoster = useCanPrintRoster(props.group?.id);
 
   const canView = useMemo(() => UserHelper.checkAccess(Permissions.membershipApi.groupMembers.view), []);
+  const canOpenProfile = useMemo(() => UserHelper.checkAccess(Permissions.membershipApi.people.view), []);
+  const canViewRoster = canView || canRecordAttendance();
 
   const groupMembers = useQuery<GroupMemberInterface[]>({
     queryKey: [`/groupmembers?groupId=${props.group?.id}`, "MembershipApi"],
     placeholderData: [],
-    enabled: !!props.group?.id && canView
+    enabled: !!props.group?.id && canViewRoster
   });
 
   const pendingRequests = useQuery<GroupJoinRequestInterface[]>({
@@ -194,15 +203,19 @@ export const GroupMembers: React.FC<Props> = memo((props) => {
 
       rows.push(
         <TableRow key={gm.id}>
-          <TableCell sx={{ width: 56 }}>
+          <TableCell sx={avatarCellSx}>
             <PersonAvatar person={gm.person as PersonInterface} size="small" />
           </TableCell>
           <TableCell>
-            <Link component={RouterLink} to={"/people/" + gm.personId} underline="hover" sx={{ fontWeight: 600 }}>
-              {personName}
-            </Link>
+            {canOpenProfile ? (
+              <Link component={RouterLink} to={"/people/" + gm.personId} underline="hover" sx={{ fontWeight: 600 }}>
+                {personName}
+              </Link>
+            ) : (
+              <Box component="span" sx={{ fontWeight: 600 }}>{personName}</Box>
+            )}
           </TableCell>
-          <TableCell sx={{ width: 120 }}>{roleCell}</TableCell>
+          <TableCell sx={roleCellSx}>{roleCell}</TableCell>
           <TableCell align="right" className="rowActions" sx={{ width: 110, whiteSpace: "nowrap" }}>
             {canEdit && (
               <Stack
@@ -226,15 +239,15 @@ export const GroupMembers: React.FC<Props> = memo((props) => {
       );
     }
     return rows;
-  }, [members, canEdit, handleToggleLeader, handleRemove]);
+  }, [members, canEdit, canOpenProfile, handleToggleLeader, handleRemove]);
 
   const tableHeader = useMemo(() => {
     if (members.length === 0) return null;
     return (
       <TableRow>
-        <TableCell sx={{ width: 56 }} />
+        <TableCell sx={avatarCellSx} />
         <TableCell>{Locale.label("common.name")}</TableCell>
-        <TableCell sx={{ width: 120 }}>{Locale.label("groups.groupMembers.role")}</TableCell>
+        <TableCell sx={roleCellSx}>{Locale.label("groups.groupMembers.role")}</TableCell>
         <TableCell sx={{ width: 110, textAlign: "right" }} />
       </TableRow>
     );
@@ -284,11 +297,15 @@ export const GroupMembers: React.FC<Props> = memo((props) => {
       {UserHelper.checkAccess(Permissions.membershipApi.groupMembers.edit) && (
         <AppIconButton label={Locale.label("groups.groupMembers.sendMemMsg")} icon={<EditNoteIcon />} tone="card" onClick={() => { setCount(0); setShow(!show); }} data-testid="send-message-button" />
       )}
-      <AppIconButton label={Locale.label("groups.printRoster.print")} icon={<PrintIcon />} tone="card" onClick={(e: React.MouseEvent<HTMLElement>) => setPrintAnchor(e.currentTarget)} data-testid="print-roster-button" />
-      <Menu anchorEl={printAnchor} open={!!printAnchor} onClose={() => setPrintAnchor(null)}>
-        <MenuItem onClick={() => openPrint("")} data-testid="print-attendance-sheet">{Locale.label("groups.printRoster.attendanceSheet")}</MenuItem>
-        <MenuItem onClick={() => openPrint("&layout=contacts")} data-testid="print-contact-roster">{Locale.label("groups.printRoster.contactRoster")}</MenuItem>
-      </Menu>
+      {canPrintRoster && (
+        <>
+          <AppIconButton label={Locale.label("groups.printRoster.print")} icon={<PrintIcon />} tone="card" onClick={(e: React.MouseEvent<HTMLElement>) => setPrintAnchor(e.currentTarget)} data-testid="print-roster-button" />
+          <Menu anchorEl={printAnchor} open={!!printAnchor} onClose={() => setPrintAnchor(null)}>
+            <MenuItem onClick={() => openPrint("")} data-testid="print-attendance-sheet">{Locale.label("groups.printRoster.attendanceSheet")}</MenuItem>
+            <MenuItem onClick={() => openPrint("&layout=contacts")} data-testid="print-contact-roster">{Locale.label("groups.printRoster.contactRoster")}</MenuItem>
+          </Menu>
+        </>
+      )}
       <ExportButton data={exportData} filename="groupmembers.csv" text={Locale.label("groups.groupsPage.export")} />
     </Stack>
   );
@@ -336,7 +353,7 @@ export const GroupMembers: React.FC<Props> = memo((props) => {
   );
 
   const renderTable = () => (
-    <Box sx={{ border: 1, borderColor: "divider", borderRadius: "var(--b1-radius-panel)", overflow: "hidden" }}>
+    <Box sx={{ border: 1, borderColor: "divider", borderRadius: "var(--b1-radius-panel)", overflowX: "auto" }}>
       <Table id="groupMemberTable">
         <TableHead>{tableHeader}</TableHead>
         <TableBody>{tableRows}</TableBody>

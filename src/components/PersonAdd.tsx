@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { ApiHelper, Locale } from "../helpers";
+import { ApiHelper, Locale, UserHelper } from "../helpers";
 import { PersonAvatar } from "@churchapps/apphelper";
 import type { PersonInterface } from "@churchapps/helpers";
 import { InputAdornment, Link, TextField, Table, TableBody, TableRow, TableCell, Typography } from "@mui/material";
@@ -22,21 +22,39 @@ interface Props {
   onCreate?: (person: PersonInterface) => void;
   inputRef?: React.RefObject<HTMLInputElement>;
   autoSearch?: boolean;
+  showHouseholdRole?: boolean;
 }
 
 const RECENT_LIMIT = 8;
 
-export const PersonAdd: React.FC<Props> = ({ addFunction, searchClicked, filterList = [], includeEmail = false, actionLabel, showCreatePersonOnNotFound = false, onCreate, inputRef, autoSearch = false }) => {
+// People picked from any Person search box, newest first, remembered per church in this browser.
+const recentPicksKey = () => "people.recentPicks." + (UserHelper.currentUserChurch?.church?.id || "");
+const getRecentPicks = (): string[] => {
+  try { return JSON.parse(localStorage.getItem(recentPicksKey()) || "[]") || []; } catch { return []; }
+};
+const saveRecentPicks = (ids: string[]) => {
+  try { localStorage.setItem(recentPicksKey(), JSON.stringify(ids.slice(0, RECENT_LIMIT))); } catch { /* storage unavailable */ }
+};
+
+export const PersonAdd: React.FC<Props> = ({ addFunction, searchClicked, filterList = [], includeEmail = false, actionLabel, showCreatePersonOnNotFound = false, onCreate, inputRef, autoSearch = false, showHouseholdRole = false }) => {
   const [searchResults, setSearchResults] = useState<PersonInterface[]>([]);
   const [searchText, setSearchText] = useState("");
   const [hasSearched, setHasSearched] = useState<boolean>(false);
   const [open, setOpen] = useState<boolean>(false);
 
-  const loadRecent = () => {
-    ApiHelper.get("/people/recent", "MembershipApi").then((data: PersonInterface[]) => {
-      const filteredResult = data.filter((s) => !filterList.includes(s.id || ""));
-      setSearchResults(filteredResult);
-    });
+  const loadRecent = async () => {
+    const pickIds = getRecentPicks();
+    const [picked, recent]: (PersonInterface[] | null)[] = await Promise.all([
+      pickIds.length ? ApiHelper.get("/people/ids?ids=" + pickIds.join(","), "MembershipApi").catch((): null => null) : Promise.resolve([]),
+      ApiHelper.get("/people/recent", "MembershipApi")
+    ]);
+    // The ids endpoint returns db order; put picks back in the order they were picked and drop deleted people.
+    const pickedList = Array.isArray(picked) ? picked : null;
+    const pickedOrdered = pickIds.map((id) => (pickedList || []).find((p) => p.id === id)).filter(Boolean) as PersonInterface[];
+    if (pickedList && pickedOrdered.length !== pickIds.length) saveRecentPicks(pickedOrdered.map((p) => p.id || ""));
+    const pickedSet = new Set(pickIds);
+    const merged = [...pickedOrdered, ...(Array.isArray(recent) ? recent : []).filter((p) => !pickedSet.has(p.id || ""))];
+    setSearchResults(merged.filter((s) => !filterList.includes(s.id || "")));
   };
 
   const filterListString = filterList.join(",");
@@ -97,6 +115,7 @@ export const PersonAdd: React.FC<Props> = ({ addFunction, searchClicked, filterL
     const idx = sr.indexOf(person);
     sr.splice(idx, 1);
     setSearchResults(sr);
+    if (person.id) saveRecentPicks([person.id, ...getRecentPicks().filter((id) => id !== person.id)]);
     addFunction(person);
   };
 
@@ -158,6 +177,7 @@ export const PersonAdd: React.FC<Props> = ({ addFunction, searchClicked, filterL
       {open && (
         <CreatePerson
           showInModal
+          showHouseholdRole={showHouseholdRole}
           onClose={() => {
             setOpen(false);
           }}

@@ -231,8 +231,6 @@
       "subscribeTitle": "Bhalisela Kwikhalenda"
     },
     "calendarEdit": {
-      "calendarDetails": "Imininingwane Yekhalenda",
-      "calendarDetailsDesc": "Hlela tilungiselelo tekhalenda yakho",
       "calendarName": "Ligama Lekhalenda",
       "calendarNameAria": "Ligama Lekhalenda",
       "cancel": "Khansela",
@@ -256,7 +254,8 @@
       "edit": "Edit",
       "editEvent": "Hlela Umcimbi",
       "manageRegistrations": "Phatsa Kubhaliswa",
-      "noGroups": "Akukho emacembu latfoliwe."
+      "noGroups": "Akukho emacembu latfoliwe.",
+      "notesSuffix": " Emanotsi"
     },
     "calendarList": {
       "aboutParagraph1": "Emakhalenda akuvumela kutsi uhlele futsi ubonise imicimbi yebandla lakho.",
@@ -333,6 +332,8 @@
       "title": "Ngenisa Ikhalenda Le-.ics"
     },
     "newEvent": {
+      "addPhoto": "Engeta Sitfombe",
+      "clickToAddPhoto": "Chofota kute wengete sitfombe",
       "customWindow": "Sikhala sekugcinelwa lesikhetsekile",
       "daily": "Njalo Ngelilanga",
       "description": "Incazelo",
@@ -341,6 +342,7 @@
       "group": "Licembu",
       "monthly": "Njalo Ngenyanga",
       "noTemplate": "(akukho themplheti)",
+      "notesMembers": "Emalunga elicembu",
       "private": "Yangasese",
       "public": "Yemphakatsi",
       "repeats": "Kuyaphindzaphindza",
@@ -817,8 +819,10 @@
       "subtitle": "Landzelela imikhankaso yetetsembiso nenchubekelo eya kutimiso temnikelo"
     },
     "donationBatchPage": {
+      "closed": "Kuvaliwe",
       "editBatch": "Hlela Liqoqo",
       "giftCount": "Tipho letingu-{count}",
+      "open": "Kuvulekile",
       "subtitle": "Phatsa iminikelo lekuleliqoqo",
       "title": "Liqoqo Lemnikelo"
     },
@@ -830,6 +834,7 @@
       "export": "Khipha",
       "failedEvents": "Tehlakalo letehlulekile ({count})",
       "giftCount": "Tipho letingu-{count}",
+      "status": "Simo",
       "stripeImportLink": "Ngenisa tetfulo teStripe letingekho",
       "subtitle": "Phatsa emaqoqo emnikelo bese ulandzelela emarekhodi emnikelo"
     },
@@ -846,6 +851,7 @@
       "date": "Lusuku",
       "fund": "Sikhwama",
       "inKind": "Ngendlela Yetintfo",
+      "item": "Intfo",
       "lastDig": "Tinombolo Letine Tekugcina",
       "method": "Indlela",
       "refund": "Refund",
@@ -1549,7 +1555,7 @@
       "sentSummarySingular": "Kutfunyelwe ku-{successCount} kwe-{recipientCount} umemukeli.",
       "subject": "Sihloko",
       "subjectMergeFieldHint": "Faka lensimu lehlanganisiwe esihlokweni:",
-      "subjectPlaceholder": "sib. Sawubona {firstName}, luhlaka lolusha lolusuka ku-{churchName}"
+      "subjectPlaceholder": "sib. Sawubona {{firstName}}, luhlaka lolusha lolusuka ku-{{churchName}}"
     },
     "sendTextDialog": {
       "characterCount": "{count} tinhlamvu ku-{segments} singeniso(tingeniso).",
@@ -3388,6 +3394,7 @@
       "detailsUpdated": "Details updated",
       "download": "Dawunlodwa",
       "downloads": "Downloads",
+      "editPublishers": "Hlela",
       "feature": "Feature",
       "featureTooltip": "Featured highlights the song on the home page. It is not the Sunday-ready mark — that comes from the listen gate.",
       "featured": "Featured",
@@ -3434,6 +3441,8 @@
       "possibleDuplicateSearch": "Sesha ku-WorshipCommons tihloko letifanako",
       "possibleDuplicateTooltip": "Lifayela nobe sihloko kufana nengoma lesevele isemtapweni — kuhlole ekubuketeni ngaphambi kwekuvumela",
       "publisher": "Publisher",
+      "publisherAdd": "Engeta",
+      "publisherPrimary": "Lokuyinhloko",
       "reason": "Reason",
       "recentlyResolved": "Recently Resolved",
       "recordingOwned": "Ungumnikati wekuchopha (nobe unemvume yemnikati)",
@@ -3849,11 +3858,11 @@
       "none": "Kute"
     },
     "directoryVisibility": {
-      "everyone": "Wonkhe Umuntfu (Kufaka Netivakashi)",
+      "everyone": "Tivakashi Nangetulu",
       "label": "Kukhombisa Eluhlwini",
-      "members": "Emalunga & Basebenti",
+      "members": "Emalunga Nangetulu",
       "regularAttendees": "Labatamela Njalo Nangetulu",
-      "staff": "Basebenti Kuphela"
+      "staff": "Baphatsi Kuphela"
     },
     "domain": {
       "domainPlaceholder": "yoursite.com",
@@ -3888,7 +3897,7 @@
       "previewSampleData": "Imininingwane yesibonelo lekhonjisiwe: John Smith, john@example.com",
       "previewSubject": "Sihloko:",
       "subject": "Sihloko",
-      "subjectPlaceholder": "sib. Sawubona {firstName}, wemukelekile ku-{churchName}",
+      "subjectPlaceholder": "sib. Sawubona {{firstName}}, wemukelekile ku-{{churchName}}",
       "subjectRequired": "Sihloko siyadzingeka.",
       "templateName": "Libito Le-Template",
       "templateNamePlaceholder": "sib. I-imeyili Yekwemukela, Sikhumbuto Semcimbi",
@@ -4366,7 +4375,6 @@
       "navHint": "Tivakashi tingafundza tiposti takho ku /blog. Faka linki yekuzula esikrinini semakhasi ukuze bakhone kuyitfola:",
       "noPosts": "Ayikho imibhalo okwamanje",
       "postCount": "Timbhalo letingu-{count}",
-      "posts": "Timbhalo",
       "published": "Kushicelelwe",
       "scheduled": "Kuhleliwe",
       "state": "Simo",
@@ -4399,6 +4407,7 @@
     },
     "calendarElementEdit": {
       "curatedCalendar": "Ikhalenda Lehlelwe",
+      "display": "Kubonisa",
       "groupCalendar": "Ikhalenda Yelicembu",
       "select": "Khetsa",
       "selectCalendar": "Khetsa Ikhalenda"
@@ -4952,7 +4961,7 @@
       "accent": "Sicwayiso",
       "accentDesc": "Sicwayiso lesiyinhloko — tinkhinobho nekugcaciswa",
       "applyPaletteAria": "Sebentisa i-palette yemibala lehlongoziwe",
-      "applySuggested": "Chofota nome ngutuphi i-palette kuze uyisebentise ngalokushesha",
+      "applySuggested": "Chofoza i-palette kute ulayishe imibala yayo, bese uchofoza Gcina I-Palette kute uyisebentise",
       "baseColors": "Imibala Lesisekelo",
       "colorCombinationsPreview": "Kubukwa Kwekuhlanganiswa Kwemibala Ngaphambili",
       "colorValues": "Emanani Emibala",

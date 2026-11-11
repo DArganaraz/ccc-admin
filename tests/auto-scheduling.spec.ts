@@ -46,6 +46,9 @@ test.describe.serial("Auto-Scheduling (2.14/2.15)", () => {
     await expect(planLink).toBeVisible({ timeout: 10000 });
     await planLink.click();
     await expect(page).toHaveURL(/\/serving\/plans\/[^/]+/);
+    // Positions and assignments live on the plan's Serving team subpage.
+    await page.getByTestId("plan-team-link").click();
+    await expect(page).toHaveURL(/\/serving\/plans\/[^/]+\/team/);
   };
 
   const addTeamMember = async (searchText: string, fullName: string) => {
@@ -122,7 +125,8 @@ test.describe.serial("Auto-Scheduling (2.14/2.15)", () => {
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.locator(".positionsTable").getByText("Greeter")).toBeVisible({ timeout: 10000 });
 
-    await page.getByTestId("plan-times-toggle").click();
+    // Times are on the plan overview.
+    await page.getByTestId("plan-back-link").click();
     await page.locator('[data-testid="add-time-button"]').click();
     await page.locator('[data-testid="time-display-name-input"] input, input[id="displayName"]').first().fill("Morning Service");
     await page.locator('input[id="startTime"]').fill("2030-06-09T09:00");
@@ -198,7 +202,10 @@ test.describe.serial("Auto-Scheduling (2.14/2.15)", () => {
     await planLink.click();
     await expect(page).toHaveURL(/\/serving\/plans\/[^/]+/);
     await expect(page.locator('[data-testid="penciled-in-chip"]')).toBeVisible({ timeout: 15000 });
-    // Penciled-in copy + publish action surface in the validation panel.
+    // Penciled-in copy + publish action surface in the team page's validation panel.
+    await page.getByTestId("plan-team-link").click();
+    await expect(page).toHaveURL(/\/serving\/plans\/[^/]+\/team/);
+    await expect(page.locator('[data-testid="penciled-in-chip"]')).toBeVisible({ timeout: 15000 });
     await expect(page.locator('[data-testid="publish-plan-button"]')).toBeVisible({ timeout: 15000 });
   });
 
@@ -227,11 +234,10 @@ test.describe.serial("Auto-Scheduling (2.14/2.15)", () => {
     await plansBtn.click();
     await expect(page).toHaveURL(/\/serving\/planTypes\/[^/]+/);
     await page.locator('button[aria-label="Edit"]').first().click();
-    await page.locator("button").getByText("Delete").click();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
     await confirmDelete(page);
     await expect(page.locator("a").getByText("Jethro Service")).toHaveCount(0, { timeout: 10000 });
 
-    page.once("dialog", async dialog => { await dialog.accept(); });
     await openMinistryTab();
     const teamLink = page.locator("a").getByText("Jethro Team");
     await expect(teamLink).toBeVisible({ timeout: 10000 });
@@ -240,18 +246,22 @@ test.describe.serial("Auto-Scheduling (2.14/2.15)", () => {
     const teamEditBtn = page.getByTestId("edit-group-button");
     await expect(teamEditBtn).toBeVisible({ timeout: 10000 });
     await teamEditBtn.click();
-    await page.locator("button").getByText("Delete").click();
-    await expect(page.locator("table a").getByText("Jethro Team")).toHaveCount(0, { timeout: 10000 });
-
-    page.once("dialog", async dialog => { await dialog.accept(); });
+    // Group deletes ask in a styled confirm dialog and then land on /groups; until confirmed nothing is deleted.
+    await page.locator("#groupDetailsBox").getByRole("button", { name: "Delete", exact: true }).click();
+    await confirmDelete(page);
+    await page.waitForURL(/\/groups(\?|$)/, { timeout: 15000 });
     await openMinistryTab();
+    await expect(page.locator("a").getByText("Jethro Team")).toHaveCount(0, { timeout: 10000 });
     await page.locator("a").getByText("Edit Ministry").click();
     const minEditBtn = page.getByTestId("edit-group-button");
     await expect(minEditBtn).toBeVisible({ timeout: 10000 });
     await minEditBtn.click();
-    const deleteBtn = page.locator("button").getByText("Delete");
+    const deleteBtn = page.locator("#groupDetailsBox").getByRole("button", { name: "Delete", exact: true });
     await expect(deleteBtn).toBeVisible({ timeout: 10000 });
     await deleteBtn.click();
-    await expect(page.locator("table a").getByText("Jethro Ministry")).toHaveCount(0, { timeout: 10000 });
+    await confirmDelete(page);
+    await page.waitForURL(/\/groups(\?|$)/, { timeout: 15000 });
+    await page.goto("/serving/plans");
+    await expect(page.locator('[role="tab"]').getByText("Jethro Ministry")).toHaveCount(0, { timeout: 10000 });
   });
 });

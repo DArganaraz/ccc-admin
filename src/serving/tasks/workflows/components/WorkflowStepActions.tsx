@@ -1,23 +1,40 @@
-import { Box, Button, IconButton, MenuItem, Select, Stack, TextField, Typography, Paper } from "@mui/material";
+import { Box, Button, Chip, IconButton, MenuItem, Select, Stack, TextField, Typography, Paper } from "@mui/material";
 import React from "react";
+import { flushSync } from "react-dom";
 import { ApiHelper, Locale } from "@churchapps/apphelper";
-import { Add as AddIcon, Delete as DeleteIcon, Save as SaveIcon } from "@mui/icons-material";
+import { Add as AddIcon, Delete as DeleteIcon } from "@mui/icons-material";
 import { type WorkflowInterface } from "@churchapps/helpers";
 import { ContentPicker } from "../../components/ContentPicker";
+import { MERGE_FIELD_KEYS, keepFocus } from "../../../../groups/components/SendTextDialog";
 import { ACTION_TYPES, SETTABLE_PERSON_FIELDS, type WorkflowStepActionInterface } from "../types";
 
-interface EmailTemplateInterface { id?: string; name?: string }
+// Gift fields fill in only when a Donation trigger started the workflow, so group texting does not offer them.
+const WORKFLOW_TEXT_MERGE_FIELDS = [
+  ...MERGE_FIELD_KEYS,
+  { key: "{{amount}}", label: "tasks.workflowActions.mergeAmount" },
+  { key: "{{giftDate}}", label: "tasks.workflowActions.mergeGiftDate" },
+  { key: "{{fund}}", label: "tasks.workflowActions.mergeFund" },
+  { key: "{{receipt}}", label: "tasks.workflowActions.mergeReceipt" }
+];
+
+interface EmailTemplateInterface { id?: string; name?: string; category?: string }
+interface EmailSendStatus { approved?: boolean; paused?: boolean }
 
 interface Props {
   stepId: string;
   workflows: WorkflowInterface[];
+  assignmentConfirmation?: boolean;
+  // The step editor's Save calls this so every action row is written along with the step.
+  saveRef?: React.Ref<() => Promise<void>>;
 }
 
 export const WorkflowStepActions = (props: Props) => {
   const [actions, setActions] = React.useState<WorkflowStepActionInterface[]>([]);
   const [templates, setTemplates] = React.useState<EmailTemplateInterface[]>([]);
   const [textingProviders, setTextingProviders] = React.useState<any[] | null>(null);
+  const [emailStatus, setEmailStatus] = React.useState<EmailSendStatus | null>(null);
   const [pickerIndex, setPickerIndex] = React.useState<number | null>(null);
+  const textRefs = React.useRef<Record<number, HTMLTextAreaElement | null>>({});
 
   const load = React.useCallback(async () => {
     const data = await ApiHelper.get("/workflowStepActions/step/" + props.stepId, "DoingApi");
@@ -28,7 +45,11 @@ export const WorkflowStepActions = (props: Props) => {
   React.useEffect(() => {
     ApiHelper.get("/emailTemplates", "MessagingApi").then((d: EmailTemplateInterface[]) => setTemplates(d || [])).catch(() => setTemplates([]));
     ApiHelper.get("/texting/providers", "MessagingApi").then((d: any[]) => setTextingProviders(d || [])).catch(() => setTextingProviders([]));
+    ApiHelper.get("/emailTemplates/sendStatus", "MessagingApi").then((d: EmailSendStatus) => setEmailStatus(d || null)).catch(() => setEmailStatus(null));
   }, []);
+
+  const emailTemplates = templates.filter(t => t.category !== "Text");
+  const textTemplates = templates.filter(t => t.category === "Text");
 
   const config = (a: WorkflowStepActionInterface): any => {
     if (!a.config) return {};
@@ -38,19 +59,19 @@ export const WorkflowStepActions = (props: Props) => {
     setActions((prev) => prev.map((a, i) => (i === index ? { ...a, config: JSON.stringify({ ...config(a), ...patch }) } : a)));
   };
   const setType = (index: number, actionType: string) => {
-    setActions((prev) => prev.map((a, i) => (i === index ? { ...a, actionType, config: "{}" } : a)));
+    setActions((prev) => prev.map((a, i) => (i === index ? { ...a, actionType, config: actionType === "sendAssignmentRequest" ? JSON.stringify({ channel: "email" }) : "{}" } : a)));
   };
 
   const addAction = () => {
     setActions((prev) => [...prev, { stepId: props.stepId, sort: prev.length + 1, actionType: "delay", config: "{}" }]);
   };
 
-  const saveAction = async (index: number) => {
-    const action = { ...actions[index], stepId: props.stepId };
-    const saved: WorkflowStepActionInterface[] = await ApiHelper.post("/workflowStepActions", [action], "DoingApi");
-    if (saved?.[0]) setActions((prev) => prev.map((a, i) => (i === index ? { ...a, ...saved[0] } : a)));
-    else load();
+  const saveAll = async () => {
+    if (actions.length === 0) return;
+    await ApiHelper.post("/workflowStepActions", actions.map((a, i) => ({ ...a, stepId: props.stepId, sort: i + 1 })), "DoingApi");
   };
+
+  React.useImperativeHandle(props.saveRef, () => saveAll);
 
   const deleteAction = async (index: number) => {
     const action = actions[index];
@@ -58,10 +79,35 @@ export const WorkflowStepActions = (props: Props) => {
     setActions((prev) => prev.filter((_, i) => i !== index));
   };
 
+  // Inserts a merge field at the Send Text cursor, same as the group Send Text window.
+  const insertMergeField = (index: number, field: string) => {
+    const message: string = config(actions[index]).message || "";
+    const input = textRefs.current[index];
+    const start = input?.selectionStart ?? message.length;
+    const end = input?.selectionEnd ?? message.length;
+    const next = message.slice(0, start) + field + message.slice(end);
+    if (next.length > 1600) return;
+    const caret = start + field.length;
+    // Commit now and place the caret in the same tick; a deferred caret lands after the next keystroke.
+    flushSync(() => setConfig(index, { message: next }));
+    textRefs.current[index]?.focus();
+    textRefs.current[index]?.setSelectionRange(caret, caret);
+  };
+
+  // Fills the Send Text message from a text template, same as the Mass Texting window. The message stays editable.
+  const applyTextTemplate = async (index: number, templateId: string) => {
+    if (!templateId) return;
+    try {
+      const full = await ApiHelper.get("/emailTemplates/" + templateId, "MessagingApi");
+      setConfig(index, { message: (full?.htmlContent || "").slice(0, 1600) });
+    } catch { /* keep the current message */ }
+  };
+
   const handlePick = (contentType: string, contentId: string, label: string) => {
     if (pickerIndex !== null) {
       const target = actions[pickerIndex];
       if (target?.actionType === "createTask") setConfig(pickerIndex, { assignedToType: contentType, assignedToId: contentId, assignedToLabel: label });
+      else if (target?.actionType === "notifyPerson") setConfig(pickerIndex, contentType === "person" ? { personId: contentId, personLabel: label } : {});
       else if (contentType === "group") setConfig(pickerIndex, { groupId: contentId, groupLabel: label });
     }
     setPickerIndex(null);
@@ -70,6 +116,19 @@ export const WorkflowStepActions = (props: Props) => {
   const renderConfig = (a: WorkflowStepActionInterface, index: number) => {
     const c = config(a);
     switch (a.actionType) {
+      case "sendAssignmentRequest":
+        return (
+          <Stack spacing={1}>
+            <Select size="small" value={c.channel || "email"} data-testid={"action-serving-channel-" + index} onChange={(e) => setConfig(index, { channel: e.target.value })}>
+              <MenuItem value="email">{Locale.label("plans.confirmation.email", "Email")}</MenuItem>
+              <MenuItem value="sms">{Locale.label("plans.confirmation.text", "Text message")}</MenuItem>
+            </Select>
+            <TextField size="small" fullWidth multiline minRows={2} label={Locale.label("plans.confirmation.message", "Request message")} value={c.message || ""} data-testid={"action-serving-message-" + index} onChange={(e) => setConfig(index, { message: e.target.value })}
+              helperText={Locale.label("plans.confirmation.messageHelp", "Includes the role, plan, service date and a response link. Use {{planName}}, {{positionName}} and {{serviceDate}} in your message. Empty uses the default request.")} />
+            {c.channel === "sms" && textingProviders?.length === 0 && <Typography color="warning.main" variant="body2">{Locale.label("tasks.workflowActions.noTextingProvider")}</Typography>}
+            <Typography variant="caption">{Locale.label("plans.confirmation.preferences", "Member preferences, SMS opt-in, provider configuration, and church email approval apply. Skipped or blocked attempts are recorded on the card.")}</Typography>
+          </Stack>
+        );
       case "delay":
         return <TextField type="number" size="small" label={Locale.label("tasks.workflowActions.days")} value={c.days ?? ""} data-testid={"action-days-" + index} onChange={(e) => setConfig(index, { days: e.target.value === "" ? undefined : Number(e.target.value) })} />;
       case "sendEmail":
@@ -77,16 +136,30 @@ export const WorkflowStepActions = (props: Props) => {
           <Stack spacing={1}>
             <Select size="small" displayEmpty value={c.templateId || ""} data-testid={"action-template-" + index} onChange={(e) => setConfig(index, { templateId: e.target.value })}>
               <MenuItem value="" disabled>{Locale.label("tasks.workflowActions.selectTemplate")}</MenuItem>
-              {templates.map((t) => <MenuItem key={t.id} value={t.id}>{t.name}</MenuItem>)}
+              {emailTemplates.map((t) => <MenuItem key={t.id} value={t.id}>{t.name}</MenuItem>)}
             </Select>
             <TextField size="small" label={Locale.label("tasks.workflowActions.subjectOverride")} value={c.subject || ""} onChange={(e) => setConfig(index, { subject: e.target.value })} />
+            {emailStatus?.approved === false && <Typography variant="body2" color="warning.main" data-testid={"action-email-not-approved-" + index}>{Locale.label("tasks.workflowActions.emailNotApproved")}</Typography>}
+            {emailStatus?.paused && <Typography variant="body2" color="warning.main" data-testid={"action-email-paused-" + index}>{Locale.label("tasks.workflowActions.emailPaused")}</Typography>}
           </Stack>
         );
       case "sendText": {
         const message: string = c.message || "";
         return (
           <Stack spacing={1}>
-            <TextField size="small" fullWidth multiline minRows={3} label={Locale.label("tasks.workflowActions.textMessage")} value={message} data-testid={"action-text-message-" + index} inputProps={{ maxLength: 1600 }} helperText={Locale.label("tasks.workflowActions.textMergeHint") + " " + message.length + "/1600"} onChange={(e) => setConfig(index, { message: e.target.value })} />
+            {textTemplates.length > 0 && (
+              <Select size="small" displayEmpty value="" data-testid={"action-text-template-" + index} onChange={(e) => applyTextTemplate(index, e.target.value as string)}>
+                <MenuItem value="" disabled>{Locale.label("tasks.workflowActions.textTemplate")}</MenuItem>
+                {textTemplates.map((t) => <MenuItem key={t.id} value={t.id}>{t.name}</MenuItem>)}
+              </Select>
+            )}
+            <TextField size="small" fullWidth multiline minRows={3} label={Locale.label("tasks.workflowActions.textMessage")} value={message} data-testid={"action-text-message-" + index} inputRef={(el: HTMLTextAreaElement | null) => { textRefs.current[index] = el; }} inputProps={{ maxLength: 1600 }} helperText={Locale.label("tasks.workflowActions.textMergeHint") + " " + message.length + "/1600"} onChange={(e) => setConfig(index, { message: e.target.value })} />
+            <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap data-testid={"action-text-merge-fields-" + index}>
+              {WORKFLOW_TEXT_MERGE_FIELDS.map((f) => (
+                <Chip key={f.key} label={Locale.label(f.label)} size="small" variant="outlined" onMouseDown={keepFocus} onClick={() => insertMergeField(index, f.key)} sx={{ cursor: "pointer" }} />
+              ))}
+            </Stack>
+            <Typography variant="caption" color="text.secondary" data-testid={"action-text-gift-hint-" + index}>{Locale.label("tasks.workflowActions.giftMergeHint")}</Typography>
             {textingProviders?.length === 0 && <Typography variant="body2" color="warning.main" data-testid={"action-text-no-provider-" + index}>{Locale.label("tasks.workflowActions.noTextingProvider")}</Typography>}
           </Stack>
         );
@@ -99,15 +172,37 @@ export const WorkflowStepActions = (props: Props) => {
             <Button size="small" data-testid={"action-group-pick-" + index} onClick={() => setPickerIndex(index)}>{Locale.label("tasks.workflowActions.pickGroup")}</Button>
           </Stack>
         );
+      case "recordAttendance":
+        return (
+          <Stack spacing={1}>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography variant="body2" color="text.secondary">{c.groupLabel || Locale.label("tasks.workflowActions.noGroup")}</Typography>
+              <Button size="small" data-testid={"action-group-pick-" + index} onClick={() => setPickerIndex(index)}>{Locale.label("tasks.workflowActions.pickGroup")}</Button>
+            </Stack>
+            <Typography variant="caption">{Locale.label("tasks.workflowActions.recordAttendanceHint")}</Typography>
+          </Stack>
+        );
       case "createTask":
         return (
           <Stack spacing={1}>
             <TextField size="small" fullWidth label={Locale.label("tasks.workflowActions.taskTitle")} value={c.title || ""} data-testid={"action-task-title-" + index} onChange={(e) => setConfig(index, { title: e.target.value })} />
+            <TextField size="small" type="number" label={Locale.label("plans.confirmation.dueDays", "Task due in days")} value={c.dueDays ?? ""} onChange={(e) => setConfig(index, { dueDays: e.target.value ? Number(e.target.value) : undefined })} />
             <TextField size="small" fullWidth label={Locale.label("tasks.workflowActions.taskDescription")} value={c.description || ""} onChange={(e) => setConfig(index, { description: e.target.value })} />
             <Stack direction="row" spacing={1} alignItems="center">
               <Typography variant="body2" color="text.secondary">{c.assignedToLabel || Locale.label("tasks.workflowActions.noAssignee")}</Typography>
               <Button size="small" data-testid={"action-assignee-pick-" + index} onClick={() => setPickerIndex(index)}>{Locale.label("tasks.workflowActions.pickAssignee")}</Button>
             </Stack>
+          </Stack>
+        );
+      case "notifyPerson":
+        return (
+          <Stack spacing={1}>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Typography variant="body2" color="text.secondary" data-testid={"action-notify-person-" + index}>{c.personLabel || Locale.label("tasks.workflowActions.noPerson")}</Typography>
+              <Button size="small" data-testid={"action-notify-pick-" + index} onClick={() => setPickerIndex(index)}>{Locale.label("tasks.workflowActions.pickPerson")}</Button>
+            </Stack>
+            <TextField size="small" fullWidth multiline minRows={2} label={Locale.label("tasks.workflowActions.notifyMessage")} value={c.message || ""} data-testid={"action-notify-message-" + index} onChange={(e) => setConfig(index, { message: e.target.value })} />
+            <Typography variant="caption">{Locale.label("tasks.workflowActions.notifyHint")}</Typography>
           </Stack>
         );
       case "addToWorkflow":
@@ -145,10 +240,9 @@ export const WorkflowStepActions = (props: Props) => {
             <Stack spacing={1}>
               <Stack direction="row" spacing={1} alignItems="center">
                 <Select size="small" value={a.actionType || "delay"} data-testid={"action-type-" + index} onChange={(e) => setType(index, e.target.value)} sx={{ minWidth: 150 }}>
-                  {ACTION_TYPES.map((t) => <MenuItem key={t} value={t}>{Locale.label("tasks.workflowActions.type." + t)}</MenuItem>)}
+                  {ACTION_TYPES.filter((t) => props.assignmentConfirmation ? !["sendEmail", "sendText", "addToWorkflow"].includes(t) : t !== "sendAssignmentRequest").map((t) => <MenuItem key={t} value={t}>{t === "sendAssignmentRequest" ? Locale.label("plans.confirmation.sendRequest", "Send serving request") : Locale.label("tasks.workflowActions.type." + t)}</MenuItem>)}
                 </Select>
                 <Box sx={{ flexGrow: 1 }} />
-                <IconButton size="small" color="primary" data-testid={"action-save-" + index} onClick={() => saveAction(index)}><SaveIcon fontSize="small" /></IconButton>
                 <IconButton size="small" data-testid={"action-delete-" + index} onClick={() => deleteAction(index)}><DeleteIcon fontSize="small" /></IconButton>
               </Stack>
               {renderConfig(a, index)}

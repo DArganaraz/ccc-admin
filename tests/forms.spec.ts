@@ -18,6 +18,12 @@ async function selectMuiOption(page: import("@playwright/test").Page, openLocato
   await page.locator('[role="listbox"]').waitFor({ state: "hidden", timeout: 10000 }).catch(() => { });
 }
 
+async function centerX(locator: import("@playwright/test").Locator) {
+  const box = await locator.boundingBox();
+  expect(box).toBeTruthy();
+  return box!.x + box!.width / 2;
+}
+
 async function openFormsPage(page: import("@playwright/test").Page) {
   await navigateToForms(page);
   await expect(page).toHaveURL(/\/forms/, { timeout: 15000 });
@@ -67,6 +73,27 @@ test.describe("Forms page", () => {
     await page.locator("#formBox").waitFor({ state: "hidden", timeout: 10000 });
   });
 
+  // Person creation from submissions only works on Stand Alone forms (the ones with a shareable link),
+  // so People forms must not offer it, and switching back to People clears the box.
+  test("person creation is offered only on Stand Alone forms and the type picker explains the shareable link", async ({ page }) => {
+    await openFormsPage(page);
+    await clickAddForm(page);
+    const autoCreate = page.locator('[data-testid="auto-create-person-checkbox"]');
+    await expect(page.locator("#formBox")).toContainText("Choose Stand Alone to get a shareable link.");
+    await expect(autoCreate).toHaveCount(0);
+
+    await selectMuiOption(page, page.locator('[data-testid="content-type-select"]'), "Stand Alone");
+    await expect(autoCreate).toBeVisible({ timeout: 10000 });
+    await autoCreate.click();
+    await expect(autoCreate.locator("input")).toBeChecked();
+
+    await selectMuiOption(page, page.locator('[data-testid="content-type-select"]'), "People");
+    await expect(autoCreate).toHaveCount(0, { timeout: 10000 });
+
+    await page.locator("#formBox button", { hasText: /^Cancel$/ }).click();
+    await page.locator("#formBox").waitFor({ state: "hidden", timeout: 10000 });
+  });
+
   test("shows a not-found state for a missing form id", async ({ page }) => {
     await page.goto("/forms/zzz-does-not-exist");
     await expect(page.getByText("Form not found")).toBeVisible({ timeout: 15000 });
@@ -78,6 +105,18 @@ test.describe("Forms page", () => {
 // Issue #1066: forms could be edited, duplicated and archived but never printed.
 // The list now offers a paper copy of any form (blank answer spaces), and a person's
 // submitted form can be printed from their Forms section.
+loggedInTest("question reorder arrows and the submissions print button have readable names", async ({ page }) => {
+  // VBS Registration (Public) is seeded with two questions.
+  await page.goto("/forms/FRM00000004");
+  const rows = page.locator("table tbody tr");
+  await expect(rows.first()).toContainText("Child Full Name", { timeout: 15000 });
+  await expect(rows.first().getByRole("button", { name: "Move down" })).toHaveCount(1);
+  await expect(rows.nth(1).getByRole("button", { name: "Move up" })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "Add question" })).toBeVisible();
+  await page.getByTestId("form-tab-submissions").click();
+  await expect(page.getByRole("button", { name: "Print" }).first()).toBeVisible({ timeout: 15000 });
+});
+
 test.describe("Printing forms", () => {
   test("prints a blank copy of a form from the Forms list", async ({ page }) => {
     await openFormsPage(page);
@@ -121,9 +160,17 @@ test.describe("Printing forms", () => {
     await expect(logo).toHaveAttribute("alt", "Grace Community Church");
     await expect.poll(() => logo.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
     await expect(dialog.getByTestId("print-church-name")).toHaveText("Grace Community Church");
+
+    // ChurchAppsSupport#1352: the letterhead is centered over the form, not squeezed top-left.
+    const title = dialog.getByRole("heading", { name: "Visitor Information Card" });
+    expect(Math.abs((await centerX(logo)) - (await centerX(title)))).toBeLessThan(4);
+    await expect(dialog.getByTestId("print-church-name")).toHaveCSS("text-align", "center");
+    await expect(title).toHaveCSS("text-align", "center");
+    await expect(logo).toHaveCSS("max-height", "70px");
   });
 
   test("a person's submitted form prints with a title, name and submission date", async ({ page }) => {
+    await mockChurchLogo(page);
     await navigateToPeople(page);
     await openPersonRow(page, "Brian Harris");
     await page.getByTestId("person-forms-all").click();
@@ -148,9 +195,18 @@ test.describe("Printing forms", () => {
     await expect(pane.getByText(/Submission Date: /)).toBeVisible();
     await expect(pane.locator('[data-testid="print-church-name"]')).toHaveText("Grace Community Church");
     await expect(printBtn).toBeHidden();
-    await page.screenshot({ path: ".pr-screenshots/submission-after.png", fullPage: true });
+    // ChurchAppsSupport#1352: the logo and church name are centered over the form title.
+    const logo = pane.getByTestId("print-church-logo");
+    const title = pane.getByRole("heading", { name: "Visitor Information Card" });
+    await expect(logo).toBeVisible({ timeout: 10000 });
+    expect(Math.abs((await centerX(logo)) - (await centerX(title)))).toBeLessThan(4);
+    await expect(pane.locator('[data-testid="print-church-name"]')).toHaveCSS("text-align", "center");
+    await expect(logo).toHaveCSS("max-height", "70px");
+    await page.screenshot({ path: test.info().outputPath("submission-after.png"), fullPage: true });
     await page.emulateMedia({ media: "screen" });
     await expect(printBtn).toBeVisible();
+    await expect(printHeader).toBeHidden();
+    await expect(logo).toBeHidden();
   });
 
   test("the printed submissions summary is headed with the church name", async ({ page }) => {
@@ -170,6 +226,36 @@ test.describe("Printing forms", () => {
   test("a form link with ?tab=submissions opens on the submissions tab", async ({ page }) => {
     await page.goto("/forms/FRM00000001?tab=submissions");
     await expect(page.getByText("Form Submission Results")).toBeVisible({ timeout: 15000 });
+  });
+});
+
+// ChurchAppsSupport#1373: stand-alone forms get a QR Code action next to Print that can be downloaded.
+test.describe("Form QR codes", () => {
+  test("a stand-alone form opens a QR code of its link with a PNG download", async ({ page }) => {
+    await openFormsPage(page);
+    const row = page.locator("table tbody tr").filter({ hasText: "VBS Registration (Public)" }).first();
+    await expect(row).toBeVisible({ timeout: 10000 });
+    await row.locator('[data-testid^="qr-form-button-"]').click();
+
+    const dialog = page.getByTestId("form-qr-dialog");
+    await expect(dialog).toBeVisible({ timeout: 10000 });
+    await expect(dialog.getByText("QR Code: VBS Registration (Public)")).toBeVisible();
+    await expect(dialog.locator("canvas")).toBeVisible();
+    await expect(dialog.getByRole("link", { name: /\/forms\/FRM00000004$/ })).toBeVisible();
+
+    const download = page.waitForEvent("download");
+    await dialog.getByTestId("form-qr-download").click();
+    expect((await download).suggestedFilename()).toBe("form-qr-vbs-registration-public.png");
+
+    await dialog.getByTestId("form-qr-close").click();
+    await expect(dialog).toHaveCount(0, { timeout: 10000 });
+  });
+
+  test("people forms have no QR Code action", async ({ page }) => {
+    await openFormsPage(page);
+    const row = page.locator("table tbody tr").filter({ hasText: "Visitor Information Card" }).first();
+    await expect(row.locator('[data-testid^="print-form-button-"]')).toBeVisible({ timeout: 10000 });
+    await expect(row.locator('[data-testid^="qr-form-button-"]')).toHaveCount(0);
   });
 });
 
@@ -203,7 +289,7 @@ test.describe.serial("People-associated form lifecycle", () => {
     await page.locator("table tbody tr").filter({ hasText: DISPOSABLE_PERSON_FORM }).first()
       .locator("a", { hasText: DISPOSABLE_PERSON_FORM }).click();
     await page.waitForURL(/\/forms\/[\w-]+/, { timeout: 10000 });
-    await expect(page.locator('button[aria-label="addQuestion"]')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("button", { name: "Add question" })).toBeVisible({ timeout: 10000 });
   });
 
   test("adds a required Email question", async () => {
@@ -211,7 +297,7 @@ test.describe.serial("People-associated form lifecycle", () => {
     await page.locator("table tbody tr").filter({ hasText: DISPOSABLE_PERSON_FORM }).first()
       .locator("a", { hasText: DISPOSABLE_PERSON_FORM }).click();
     await page.waitForURL(/\/forms\/[\w-]+/, { timeout: 10000 });
-    await page.locator('button[aria-label="addQuestion"]').click();
+    await page.getByRole("button", { name: "Add question" }).click();
     await page.locator('[data-testid="question-title-input"] input').waitFor({ state: "visible", timeout: 10000 });
 
     const providerSelect = page.locator("#questionBox").getByLabel("Field Type");
@@ -297,6 +383,36 @@ test.describe.serial("Stand Alone form lifecycle", () => {
     await expect(row.locator("td a").filter({ hasText: /\/forms\// }).first()).toBeVisible();
   });
 
+  test("adds a header photo from the gallery and sees it again on reopen", async () => {
+    const photo = "content/CHU00000001/gallery/1.78/zacchaeus-form.jpg";
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+    await page.route("**/content/gallery/1.78", (route) => route.fulfill({ json: { images: [photo] } }));
+    await page.route("**/zacchaeus-form.jpg", (route) => route.fulfill({ contentType: "image/png", body: png }));
+
+    // The previous test leaves the Forms list open with this row on it.
+    const row = page.locator("table tbody tr").filter({ hasText: DISPOSABLE_STANDALONE_FORM }).first();
+    await expect(row).toBeVisible({ timeout: 10000 });
+    await row.locator('[data-testid^="edit-form-button-"]').first().click();
+    await page.locator("#formBox").waitFor({ state: "visible", timeout: 10000 });
+    await expect(page.locator('[data-testid="form-photo"] img')).toHaveCount(0);
+
+    await page.locator('[data-testid="form-photo-button"]').click();
+    await page.locator('[data-testid="select-image"]').first().click();
+    await expect(page.locator('[data-testid="form-photo"] img')).toHaveAttribute("src", /zacchaeus-form\.jpg$/);
+
+    const formPost = page.waitForResponse((r) => r.url().endsWith("/membership/forms") && r.request().method() === "POST" && r.ok(), { timeout: 15000 });
+    await saveFormDrawer(page);
+    const saved = await (await formPost).json();
+    expect(saved[0]?.photoUrl, "saved photoUrl").toMatch(/zacchaeus-form\.jpg$/);
+
+    await row.locator('[data-testid^="edit-form-button-"]').first().click();
+    await page.locator("#formBox").waitFor({ state: "visible", timeout: 10000 });
+    await expect(page.locator('[data-testid="form-photo"] img')).toHaveAttribute("src", /zacchaeus-form\.jpg$/, { timeout: 10000 });
+    await page.locator("#formBox button", { hasText: /^Cancel$/ }).click();
+    await page.locator("#formBox").waitFor({ state: "hidden", timeout: 10000 });
+    await page.unroute("**/content/gallery/1.78");
+  });
+
   test("duplicating a form confirms first and shows a duplicated snackbar", async () => {
     await openFormsPage(page);
     const row = page.locator("table tbody tr").filter({ hasText: DISPOSABLE_STANDALONE_FORM }).first();
@@ -347,7 +463,7 @@ test.describe("Person form submissions (profile rail)", () => {
       const uc = ((await login.json()).userChurches || []).find((c: any) => c.church?.id === "CHU00000001");
       const auth = { headers: { Authorization: "Bearer " + uc.jwt } };
       const found = await (await ctx.get(`${API}/membership/people/search?term=${encodeURIComponent(SEED_PEOPLE.DONALD)}`, auth)).json();
-      const donald = (found as any[]).find((p) => p.name?.display === SEED_PEOPLE.DONALD);
+      const donald = (found as any[]).find((p) => `${p.name?.first} ${p.name?.last}` === SEED_PEOPLE.DONALD);
       const person = await (await ctx.get(`${API}/membership/people/${donald.id}`, auth)).json();
       for (const fs of person.formSubmissions || []) await ctx.delete(`${API}/membership/formsubmissions/${fs.id}`, auth);
     } finally {
@@ -479,7 +595,7 @@ test.describe.serial("Repeated submissions of the same form stay reachable", () 
 // only stop new submissions, never hide history.
 //
 // Uses its own disposable form rather than archiving the seed "Visitor Information
-// Card": that card is asserted on by people.spec.ts, issue-1014.spec.ts and
+// Card": that card is asserted on by people.spec.ts, people-form-results-dark-mode.spec.ts and
 // serving-event-triggers.spec.ts, which run in parallel workers (workers: 4), so
 // archiving it mid-suite would intermittently break those files.
 test.describe.serial("Archived forms keep submission history", () => {
@@ -530,7 +646,7 @@ test.describe.serial("Archived forms keep submission history", () => {
 
     await formRow().locator("a", { hasText: ARCHIVE_FORM }).click();
     await page.waitForURL(/\/forms\/[\w-]+/, { timeout: 10000 });
-    await page.locator('button[aria-label="addQuestion"]').click();
+    await page.getByRole("button", { name: "Add question" }).click();
     await page.locator('[data-testid="question-title-input"] input').waitFor({ state: "visible", timeout: 10000 });
     await selectMuiOption(page, page.locator("#questionBox").getByLabel("Field Type"), "Email");
     await page.locator('[data-testid="question-title-input"] input').fill("Email Address");
@@ -730,6 +846,7 @@ loggedInTest.describe.serial("Form submissions keep the form's question order", 
 // from the person's Forms tab, or unlink it back to Anonymous.
 loggedInTest.describe.serial("Relinking a form submission to another person", () => {
   const RELINK_FORM_NAME = "Zacchaeus Relink Form";
+  // Not Donald: the profile-rail describe deletes all of Donald's submissions while this one may be running.
   let ctx: APIRequestContext;
   let auth: { headers: { Authorization: string } };
   let formId = "";
@@ -748,12 +865,12 @@ loggedInTest.describe.serial("Relinking a form submission to another person", ()
     formId = (await formRes.json())?.[0]?.id;
     const qRes = await ctx.post(`${WIDE_API}/membership/questions`, { ...auth, data: [{ formId, title: "Relink Note", fieldType: "Textbox", sort: 1 }] });
     const questionId = (await qRes.json())?.[0]?.id;
-    const donaldRes = await ctx.get(`${WIDE_API}/membership/people/search?term=${encodeURIComponent(SEED_PEOPLE.DONALD)}`, auth);
-    const donald = ((await donaldRes.json()) as any[]).find((p) => p.name?.display === SEED_PEOPLE.DONALD);
-    expect(donald?.id).toBeTruthy();
+    const originalRes = await ctx.get(`${WIDE_API}/membership/people/search?term=${encodeURIComponent(SEED_PEOPLE.DOROTHY)}`, auth);
+    const original = ((await originalRes.json()) as any[]).find((p) => `${p.name?.first} ${p.name?.last}` === SEED_PEOPLE.DOROTHY);
+    expect(original?.id).toBeTruthy();
     const subRes = await ctx.post(`${WIDE_API}/membership/formsubmissions`, {
       ...auth,
-      data: [{ formId, contentType: "person", contentId: donald.id, submittedBy: donald.id, submissionDate: new Date().toISOString(), answers: [{ questionId, value: "Wrong person" }] }]
+      data: [{ formId, contentType: "person", contentId: original.id, submittedBy: original.id, submissionDate: new Date().toISOString(), answers: [{ questionId, value: "Wrong person" }] }]
     });
     expect(subRes.ok()).toBeTruthy();
     submissionId = (await subRes.json())?.[0]?.id;
@@ -779,13 +896,31 @@ loggedInTest.describe.serial("Relinking a form submission to another person", ()
     await expect(dialog).toHaveCount(0, { timeout: 10000 });
   }
 
+  loggedInTest("a slow submissions load shows a spinner, not No form submissions found", async ({ page }) => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => { release = r; });
+    await page.route("**/formsubmissions/formId/**", async (route) => { await held; await route.continue(); });
+    await page.goto(`/forms/${formId}`);
+    await page.getByText("Form Submissions", { exact: true }).first().click();
+    await page.waitForTimeout(1500);
+    await expect(page.getByText("No form submissions found")).toHaveCount(0);
+    release();
+    await expect(page.getByRole("cell", { name: SEED_PEOPLE.DOROTHY })).toBeVisible({ timeout: 15000 });
+  });
+
   loggedInTest("moves a submission to another person from the Submissions table", async ({ page }) => {
     await openSubmissions(page);
-    await expect(page.getByRole("cell", { name: SEED_PEOPLE.DONALD })).toBeVisible();
+    await expect(page.getByRole("cell", { name: SEED_PEOPLE.DOROTHY })).toBeVisible();
     await page.locator(`[data-testid="submission-change-person-${submissionId}"]`).click();
     await pickPerson(page, SEED_PEOPLE.CAROL);
     await expect(page.getByRole("cell", { name: SEED_PEOPLE.CAROL })).toBeVisible({ timeout: 10000 });
-    await expect(page.getByRole("cell", { name: SEED_PEOPLE.DONALD })).toHaveCount(0);
+    await expect(page.getByRole("cell", { name: SEED_PEOPLE.DOROTHY })).toHaveCount(0);
+
+    // The name opens the person in the app, without reloading the whole page.
+    await page.evaluate(() => { (window as any).__noReload = true; });
+    await page.getByRole("cell", { name: SEED_PEOPLE.CAROL }).getByRole("link", { name: SEED_PEOPLE.CAROL }).click();
+    await expect(page).toHaveURL(/\/people\/[\w-]+$/);
+    expect(await page.evaluate(() => (window as any).__noReload)).toBe(true);
   });
 
   loggedInTest("the moved submission shows on the new person's Forms tab and can be unlinked there", async ({ page }) => {
@@ -804,4 +939,25 @@ loggedInTest.describe.serial("Relinking a form submission to another person", ()
     await expect(page.getByRole("cell", { name: "Anonymous" })).toBeVisible();
     await expect(page.getByRole("cell", { name: SEED_PEOPLE.CAROL })).toHaveCount(0);
   });
+});
+
+// A form deleted after the person page loaded its form list used to leave the All forms pane on its
+// spinner for every form: one failed detail request rejected the load for all of them.
+loggedInTest("the person's forms pane still shows other forms when one was deleted after the page loaded", async ({ page }) => {
+  const ctx = await pwRequest.newContext();
+  const body = await (await ctx.post(`${WIDE_API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+  const jwt = (body.userChurches.find((c: any) => c.church?.id === "CHU00000001") || body.userChurches[0]).jwt;
+  const auth = { headers: { Authorization: "Bearer " + jwt } };
+  const form = (await (await ctx.post(`${WIDE_API}/membership/forms`, { ...auth, data: [{ name: `Zacchaeus Doomed Person Form ${Date.now()}`, contentType: "person" }] })).json())[0];
+  try {
+    await page.goto("/people/PER00000081");
+    await page.getByTestId("person-forms-all").waitFor({ timeout: 15000 });
+    await ctx.delete(`${WIDE_API}/membership/forms/${form.id}`, auth);
+    await page.getByTestId("person-forms-all").click();
+    await page.getByRole("button", { name: "Visitor Information Card" }).click();
+    await expect(page.locator('[data-testid="display-box-content"]').getByText("Not filled out yet.")).toBeVisible({ timeout: 10000 });
+  } finally {
+    await ctx.delete(`${WIDE_API}/membership/forms/${form.id}`, auth);
+    await ctx.dispose();
+  }
 });

@@ -1,19 +1,51 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { Box, Button, Icon, Stack, Switch, TextField, Typography } from "@mui/material";
+import { Box, Button, FormControl, Icon, InputLabel, MenuItem, Select, Snackbar, Stack, Switch, Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography } from "@mui/material";
 import { ApiHelper, Locale, UniqueIdHelper, UserHelper, Permissions } from "@churchapps/apphelper";
-import type { GenericSettingInterface } from "@churchapps/helpers";
+import type { GenericSettingInterface, GroupInterface } from "@churchapps/helpers";
 import { QRCodeCanvas } from "qrcode.react";
 import { FormCard, TextAction } from "../components/ui";
+import { GalleryModal } from "../components/gallery";
 import { EnvironmentHelper } from "../helpers";
 import { useRequirePermission } from "../hooks";
 import { KioskThemeEdit } from "./KioskThemeEdit";
 import { MobileChrome } from "./components/MobileChrome";
 
+type FieldMode = "off" | "optional" | "required";
+type FieldKey = "title" | "email" | "phone" | "householdRole" | "address" | "birthDate" | "gender" | "maritalStatus" | "grade" | "comments";
+type FieldModes = Record<FieldKey, FieldMode>;
+
+const FIELD_KEYS: FieldKey[] = [
+  "title", "email", "phone", "householdRole", "address", "birthDate", "gender", "maritalStatus", "grade", "comments"
+];
+// fields.title is the table heading, so the Title row reads its label from fields.personTitle.
+const fieldLabelKey = (key: FieldKey) => "mobile.checkInPage.fields." + (key === "title" ? "personTitle" : key);
+const DEFAULT_FIELDS: FieldModes = { title: "off", email: "optional", phone: "optional", householdRole: "optional", address: "off", birthDate: "off", gender: "off", maritalStatus: "off", grade: "off", comments: "off" };
+
+const parseFields = (raw?: string): FieldModes => {
+  const result = { ...DEFAULT_FIELDS };
+  try {
+    const parsed = raw ? JSON.parse(raw) : {};
+    FIELD_KEYS.forEach((k) => { if (["off", "optional", "required"].includes(parsed?.[k])) result[k] = parsed[k]; });
+  } catch { /* fall back to defaults */ }
+  return result;
+};
+
 export const CheckInPage: React.FC = () => {
   const [enabled, setEnabled] = React.useState(false);
   const [setting, setSetting] = React.useState<GenericSettingInterface | null>(null);
+  const [fields, setFields] = React.useState<FieldModes>(DEFAULT_FIELDS);
+  const [fieldsSetting, setFieldsSetting] = React.useState<GenericSettingInterface | null>(null);
+  const [groupId, setGroupId] = React.useState("");
+  const [groupSetting, setGroupSetting] = React.useState<GenericSettingInterface | null>(null);
+  const [recordAttendance, setRecordAttendance] = React.useState(false);
+  const [attendanceSetting, setAttendanceSetting] = React.useState<GenericSettingInterface | null>(null);
+  const [imageUrl, setImageUrl] = React.useState("");
+  const [imageSetting, setImageSetting] = React.useState<GenericSettingInterface | null>(null);
+  const [showGallery, setShowGallery] = React.useState(false);
+  const [groups, setGroups] = React.useState<GroupInterface[]>([]);
   const [saving, setSaving] = React.useState(false);
+  const [showSaved, setShowSaved] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
 
@@ -30,6 +62,20 @@ export const CheckInPage: React.FC = () => {
       setSetting(qrSetting);
       setEnabled(qrSetting.value === "true");
     }
+    const savedFields = allSettings.find((s: GenericSettingInterface) => s.keyName === "guestRegistrationFields");
+    setFieldsSetting(savedFields || null);
+    setFields(parseFields(savedFields?.value));
+    const savedGroup = allSettings.find((s: GenericSettingInterface) => s.keyName === "guestRegistrationGroupId");
+    setGroupSetting(savedGroup || null);
+    setGroupId(savedGroup?.value || "");
+    const savedAttendance = allSettings.find((s: GenericSettingInterface) => s.keyName === "guestRegistrationRecordAttendance");
+    setAttendanceSetting(savedAttendance || null);
+    setRecordAttendance(savedAttendance?.value === "true");
+    const savedImage = allSettings.find((s: GenericSettingInterface) => s.keyName === "guestRegistrationImage");
+    setImageSetting(savedImage || null);
+    setImageUrl(savedImage?.value || "");
+    const allGroups: GroupInterface[] = await ApiHelper.get("/groups", "MembershipApi");
+    setGroups([...(allGroups || [])].sort((a, b) => (a.name || "").localeCompare(b.name || "")));
   }, [churchId]);
 
   React.useEffect(() => { loadData(); }, [loadData]);
@@ -42,7 +88,18 @@ export const CheckInPage: React.FC = () => {
     try {
       const s: GenericSettingInterface = setting || { churchId, public: 1, keyName: "enableQRGuestRegistration" };
       s.value = enabled ? "true" : "false";
-      await ApiHelper.post("/settings", [s], "MembershipApi");
+      const f: GenericSettingInterface = fieldsSetting || { churchId, public: 1, keyName: "guestRegistrationFields" };
+      f.value = JSON.stringify(fields);
+      // Private: the anonymous sign-up reads it on the server, so guests never see or pick it.
+      const g: GenericSettingInterface = groupSetting || { churchId, public: 0, keyName: "guestRegistrationGroupId" };
+      g.value = groupId;
+      const a: GenericSettingInterface = attendanceSetting || { churchId, public: 0, keyName: "guestRegistrationRecordAttendance" };
+      a.value = recordAttendance ? "true" : "false";
+      // Public: the sign-up page shows it in place of the icon.
+      const img: GenericSettingInterface = imageSetting || { churchId, public: 1, keyName: "guestRegistrationImage" };
+      img.value = imageUrl;
+      await ApiHelper.post("/settings", [s, f, g, a, img], "MembershipApi");
+      setShowSaved(true);
       await loadData();
     } finally {
       setSaving(false);
@@ -68,11 +125,15 @@ export const CheckInPage: React.FC = () => {
 
   const dirty = enabled !== (setting?.value === "true");
 
+  // Required only makes sense once a field is included; turning Include off clears it.
+  const setInclude = (key: FieldKey, include: boolean) => setFields({ ...fields, [key]: include ? "optional" : "off" });
+  const setRequired = (key: FieldKey, req: boolean) => setFields({ ...fields, [key]: req ? "required" : "optional" });
+
   return (
     <MobileChrome
       title={Locale.label("mobile.checkInPage.title")}
       subtitle={Locale.label("mobile.checkInPage.subtitle")}>
-      <FormCard title={Locale.label("mobile.checkInPage.qrGuestRegistration")} icon="qr_code_2" onSave={handleSave} isSubmitting={saving}>
+      <FormCard title={Locale.label("mobile.checkInPage.qrGuestRegistration")} icon="qr_code_2" onSave={handleSave} isSubmitting={saving} saveTestId="qr-guest-registration-save">
         <Typography variant="body2" color="text.secondary">{Locale.label("mobile.checkInPage.qrTooltip")}</Typography>
         <Stack direction="row" alignItems="center">
           <Switch checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
@@ -80,6 +141,69 @@ export const CheckInPage: React.FC = () => {
             {enabled ? Locale.label("mobile.checkInPage.enabled") : Locale.label("mobile.checkInPage.disabled")}
           </Typography>
         </Stack>
+
+        {enabled && (
+          <Box data-testid="guest-registration-fields">
+            <Typography variant="h3" sx={{ mb: 0.5 }}>{Locale.label("mobile.checkInPage.fields.title")}</Typography>
+            <Typography variant="body2" sx={{ color: "text.secondary", mb: 1 }}>{Locale.label("mobile.checkInPage.fields.description")}</Typography>
+            <Table size="small" sx={{ maxWidth: 520 }}>
+              <TableHead>
+                <TableRow>
+                  <TableCell>{Locale.label("mobile.checkInPage.fields.field")}</TableCell>
+                  <TableCell align="center">{Locale.label("mobile.checkInPage.fields.include")}</TableCell>
+                  <TableCell align="center">{Locale.label("mobile.checkInPage.fields.required")}</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {FIELD_KEYS.map((key) => {
+                  const label = Locale.label(fieldLabelKey(key));
+                  return (
+                    <TableRow key={key} data-testid={"guest-field-" + key}>
+                      <TableCell>{label}</TableCell>
+                      <TableCell align="center">
+                        <Switch checked={fields[key] !== "off"} onChange={(e) => setInclude(key, e.target.checked)} slotProps={{ input: { "aria-label": Locale.label("mobile.checkInPage.fields.include") + " " + label } }} />
+                      </TableCell>
+                      <TableCell align="center">
+                        <Switch checked={fields[key] === "required"} disabled={fields[key] === "off"} onChange={(e) => setRequired(key, e.target.checked)} slotProps={{ input: { "aria-label": Locale.label("mobile.checkInPage.fields.required") + " " + label } }} />
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+            <FormControl size="small" sx={{ mt: 2, minWidth: 280 }}>
+              <InputLabel id="guest-registration-group-label" shrink>{Locale.label("mobile.checkInPage.addToGroup")}</InputLabel>
+              <Select labelId="guest-registration-group-label" displayEmpty notched label={Locale.label("mobile.checkInPage.addToGroup")} value={groups.some((g) => g.id === groupId) ? groupId : ""} data-testid="guest-registration-group" onChange={(e) => setGroupId(e.target.value)}>
+                <MenuItem value="">{Locale.label("mobile.checkInPage.noGroup")}</MenuItem>
+                {groups.map((g) => <MenuItem key={g.id} value={g.id}>{g.name}</MenuItem>)}
+              </Select>
+            </FormControl>
+            <Typography variant="body2" sx={{ color: "text.secondary", mt: 0.5 }}>{Locale.label("mobile.checkInPage.addToGroupHelp")}</Typography>
+            {groupId && (
+              <Box sx={{ mt: 1 }}>
+                <Stack direction="row" alignItems="center">
+                  <Switch checked={recordAttendance} onChange={(e) => setRecordAttendance(e.target.checked)} slotProps={{ input: { "aria-label": Locale.label("mobile.checkInPage.recordAttendance") } }} data-testid="guest-registration-record-attendance" />
+                  <Typography variant="body2" sx={{ ml: 1 }}>{Locale.label("mobile.checkInPage.recordAttendance")}</Typography>
+                </Stack>
+                <Typography variant="body2" sx={{ color: "text.secondary" }}>{Locale.label("mobile.checkInPage.recordAttendanceHelp")}</Typography>
+              </Box>
+            )}
+
+            <Typography variant="h3" sx={{ mt: 3, mb: 0.5 }}>{Locale.label("mobile.checkInPage.headerPhoto")}</Typography>
+            <Typography variant="body2" sx={{ color: "text.secondary", mb: 1 }}>{Locale.label("mobile.checkInPage.headerPhotoHelp")}</Typography>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ xs: "flex-start", sm: "center" }} data-testid="guest-registration-photo">
+              {imageUrl && (
+                <Box sx={{ width: 240, aspectRatio: "16 / 9", borderRadius: "var(--b1-radius-panel)", overflow: "hidden", border: 1, borderColor: "divider" }}>
+                  <img src={imageUrl} alt={Locale.label("mobile.checkInPage.headerPhoto")} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                </Box>
+              )}
+              <Stack direction="row" spacing={1}>
+                <Button variant="outlined" size="small" startIcon={<Icon>photo_camera</Icon>} onClick={() => setShowGallery(true)}>{Locale.label("mobile.checkInPage.changePhoto")}</Button>
+                {imageUrl && <Button variant="text" size="small" color="error" onClick={() => setImageUrl("")}>{Locale.label("mobile.checkInPage.removePhoto")}</Button>}
+              </Stack>
+            </Stack>
+          </Box>
+        )}
 
         {enabled && registrationUrl && (
           <Box>
@@ -125,7 +249,9 @@ export const CheckInPage: React.FC = () => {
         </FormCard>
       )}
 
+      {showGallery && <GalleryModal aspectRatio={16 / 9} onSelect={(url) => { setImageUrl(url); setShowGallery(false); }} onCancel={() => setShowGallery(false)} />}
       <KioskThemeEdit />
+      <Snackbar open={showSaved} autoHideDuration={3000} onClose={() => setShowSaved(false)} message={Locale.label("common.saved")} anchorOrigin={{ vertical: "bottom", horizontal: "center" }} />
     </MobileChrome>
   );
 };

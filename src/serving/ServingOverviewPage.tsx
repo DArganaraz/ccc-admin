@@ -132,6 +132,9 @@ export const ServingOverviewPage = () => {
     return last ? `${first} ${last.charAt(0)}.` : first;
   };
 
+  const rank = React.useMemo(() => new Map((people.data || []).map((p, i) => [p.id, i])), [people.data]);
+  const byName = (a: string, b: string) => (rank.get(a) ?? Infinity) - (rank.get(b) ?? Infinity);
+
   // Slot per distinct positionId keeps same-named positions independently editable.
   const { dates, rows } = React.useMemo(() => {
     const dateSet = new Set<string>();
@@ -171,17 +174,18 @@ export const ServingOverviewPage = () => {
     return rows.filter(row => dates.some(d => row.activeDates.has(d) && cellFilled(row.cells[d]) < (row.cells[d]?.needed || 0)));
   }, [rows, dates, gapsOnly]);
 
+  // The export is the grid as shown, so Unfilled only carries over.
   const csvData = React.useMemo(() => {
-    return rows.map(row => {
+    return displayRows.map(row => {
       const obj: Record<string, string> = { Position: row.position };
       dates.forEach(d => {
         const cell = row.cells[d];
-        const names = cell ? cellPersonIds(cell).map(id => getDisplayName(id)) : [];
+        const names = cell ? cellPersonIds(cell).sort(byName).map(id => getDisplayName(id)) : [];
         obj[formatShortDate(d)] = names.join("; ");
       });
       return obj;
     });
-  }, [rows, dates, people.data]);
+  }, [displayRows, dates, people.data]);
 
   const csvHeaders = React.useMemo(() => {
     const headers = [{ label: Locale.label("plans.servingOverviewPage.position"), key: "Position" }];
@@ -264,7 +268,7 @@ export const ServingOverviewPage = () => {
         <HeaderTextButton component={Link} to={planTypeId ? `/serving/planTypes/${planTypeId}` : "/serving/plans"} startIcon={<BackIcon />} data-testid="overview-back-link">
           {planType.data?.name || Locale.label("components.wrapper.plans", "Plans")}
         </HeaderTextButton>
-        {rows.length > 0 && <ExportButton data={csvData} customHeaders={csvHeaders} filename={Locale.label("plans.servingOverviewPage.filename")} text={Locale.label("plans.servingOverviewPage.exportCsv")} />}
+        {displayRows.length > 0 && <ExportButton data={csvData} customHeaders={csvHeaders} filename={Locale.label("plans.servingOverviewPage.filename")} text={Locale.label("plans.servingOverviewPage.exportCsv")} />}
         {canEdit && (
           <HeaderSecondaryButton startIcon={<EmailIcon />} disabled={busy || !ministryId || rows.length === 0} onClick={handleEmailAll} data-testid="matrix-email-all">
             {Locale.label("plans.servingOverviewPage.emailAll")}
@@ -300,7 +304,7 @@ export const ServingOverviewPage = () => {
                 <InputLabel>{Locale.label("plans.servingOverviewPage.highlightPerson")}</InputLabel>
                 <Select displayEmpty label={Locale.label("plans.servingOverviewPage.highlightPerson")} value={highlightPersonId} onChange={(e) => setHighlightPersonId(e.target.value)} data-testid="highlight-person-select">
                   <MenuItem value="">{Locale.label("plans.servingOverviewPage.highlightAll")}</MenuItem>
-                  {personIds.map(id => <MenuItem key={id} value={id}>{getDisplayName(id)}</MenuItem>)}
+                  {[...personIds].sort(byName).map(id => <MenuItem key={id} value={id}>{getDisplayName(id)}</MenuItem>)}
                 </Select>
               </FormControl>
             </Stack>
@@ -330,7 +334,7 @@ export const ServingOverviewPage = () => {
                         const isGap = isActive && cell && filled < cell.needed;
                         const ids = cell ? cellPersonIds(cell) : [];
                         const isHighlight = !!highlightPersonId && ids.includes(highlightPersonId);
-                        const content = isActive ? (ids.map(id => getDisplayName(id)).join(", ") || "—") : "";
+                        const content = isActive ? ([...ids].sort(byName).map(id => getDisplayName(id)).join(", ") || "—") : "";
                         return (
                           <TableCell
                             key={d}
@@ -365,7 +369,7 @@ export const ServingOverviewPage = () => {
         <DialogContent dividers>
           {editingCell?.slots.map(slot => (
             <Box key={slot.positionId} sx={{ mb: 2 }}>
-              {slot.assignments.map(a => (
+              {[...slot.assignments].sort((a, b) => byName(a.personId, b.personId)).map(a => (
                 <Stack key={a.assignmentId} direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 0.5 }}>
                   <span>{getDisplayName(a.personId)}</span>
                   <Tooltip title={Locale.label("plans.servingOverviewPage.remove")}>
@@ -378,6 +382,7 @@ export const ServingOverviewPage = () => {
                 position={{ id: slot.positionId, groupId: slot.groupId, count: slot.needed, name: editingRow?.positionName } as PositionInterface}
                 assignment={{ positionId: slot.positionId } as AssignmentInterface}
                 peopleNeeded={slot.needed - slot.assignments.length}
+                assignedPersonIds={slot.assignments.map((a) => a.personId)}
                 updatedFunction={(done: boolean) => { overviewData.refetch(); if (done) setEditingKey(null); }}
               />
             </Box>

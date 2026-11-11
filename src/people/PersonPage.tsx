@@ -9,7 +9,7 @@ import UserContext from "../UserContext";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PersonIdentity } from "./components/PersonIdentity";
 import { useHousehold } from "./components/Household";
-import { PersonAttendanceSummary, PersonFormsSummary, PersonGivingSummary, PersonGroupsSummary, PersonNotesSummary } from "./components/PersonSummaries";
+import { PersonAttendanceSummary, PersonFormsSummary, PersonGivingSummary, PersonGroupsSummary, PersonNotesSummary, PersonRequestsSummary } from "./components/PersonSummaries";
 import { LogGiftDialog } from "../donations/components/LogGiftDialog";
 
 const FORM_VIEWS = ["edit", "household"];
@@ -36,6 +36,9 @@ export const PersonPage = () => {
   const [giftVersion, setGiftVersion] = React.useState(0);
   const queryClient = useQueryClient();
   const formPermission = useMemo(() => UserHelper.checkAccess(Permissions.membershipApi.forms.admin) || UserHelper.checkAccess(Permissions.membershipApi.forms.edit), []);
+  // Requests follow the Approvals page permission; registrations follow Registrations > View (#1476).
+  const canViewRequests = useMemo(() => UserHelper.checkAccess(Permissions.contentApi.content.edit) || UserHelper.checkAccess({ api: "ContentApi", contentType: "Calendars", action: "Admin" }), []);
+  const canViewRegistrations = useMemo(() => UserHelper.checkAccess({ api: "ContentApi", contentType: "Registrations", action: "View" }), []);
   const canViewConfidentialNotes = useMemo(() => UserHelper.checkAccess({ api: "MembershipApi", contentType: "People", action: "View Confidential Notes" }), []);
   const [confidentialConversationId, setConfidentialConversationId] = React.useState("");
 
@@ -76,16 +79,20 @@ export const PersonPage = () => {
     if (!params.id) return;
     const churchId = UserHelper.currentUserChurch?.church?.id;
     const personId = UserHelper.person?.id;
+    if (!churchId) return;
+    // The person's content room hears about note activity even before the person has a conversation
+    // (the first note creates it), so another user's first note shows here without a reload.
+    const rooms = ["content-person-" + params.id];
     const conversationId = personData.data?.conversationId;
-    if (!churchId || !conversationId) return;
-    SubscriptionManager.joinRoom(conversationId, churchId, personId).catch(() => { /* ignore */ });
+    if (conversationId) rooms.push(conversationId);
+    rooms.forEach((room) => SubscriptionManager.joinRoom(room, churchId, personId).catch(() => { /* ignore */ }));
     const handlerId = `PersonPage-${params.id}`;
     SocketHelper.addHandler("conversationActivity", handlerId, (data: any) => {
       if (data?.contentType === "person" && data?.contentId === params.id) refetchRef.current();
     });
     return () => {
       SocketHelper.removeHandler(handlerId);
-      SubscriptionManager.leaveRoom(conversationId, churchId).catch(() => { /* ignore */ });
+      rooms.forEach((room) => SubscriptionManager.leaveRoom(room, churchId).catch(() => { /* ignore */ }));
     };
   }, [params.id, personData.data?.conversationId]);
 
@@ -135,7 +142,8 @@ export const PersonPage = () => {
     attendance: canViewAttendance,
     giving: canViewGiving,
     notes: canEdit,
-    forms: showForms
+    forms: showForms,
+    requests: canViewRequests || canViewRegistrations
   };
   const view = allowedViews[requestedView] ? requestedView : "";
 
@@ -166,8 +174,9 @@ export const PersonPage = () => {
       visibility: "hidden"
     };
     const result: ConversationInterface[] = await ApiHelper.post("/conversations", [conv], "MessagingApi");
-    setConfidentialConversationId(result[0].id);
-    return result[0].id || "";
+    const conversationId = result[0].id || "";
+    setConfidentialConversationId(conversationId);
+    return conversationId;
   };
 
   const handlePhotoUpdated = (dataUrl?: string) => {
@@ -198,13 +207,15 @@ export const PersonPage = () => {
 
   const notes = (
     <React.Fragment key={`notes-${person.conversationId || "new"}-${confidentialConversationId || "new"}`}>
-      <PersonNotes context={context} conversationId={person.conversationId || ""} createConversation={handleCreateConversation} />
+      <PersonNotes context={context} conversationId={person.conversationId || ""} createConversation={handleCreateConversation} contentType="person" contentId={person.id} />
       {canViewConfidentialNotes && (
         <PersonNotes
           title={Locale.label("people.personPage.confidentialNotes")}
           context={context}
           conversationId={confidentialConversationId}
           createConversation={handleCreateConfidentialConversation}
+          contentType="personConfidential"
+          contentId={person.id}
         />
       )}
     </React.Fragment>
@@ -247,6 +258,8 @@ export const PersonPage = () => {
         return <>{backButton}{notes}</>;
       case "forms":
         return <>{backButton}<PersonForms person={person} forms={visibleForms} initialFormId={searchParams.get("form") || ""} updatedFunction={refetch} /></>;
+      case "requests":
+        return <>{backButton}<PersonRequestsSummary personId={person.id!} canViewRequests={canViewRequests} canViewRegistrations={canViewRegistrations} /></>;
       default:
         return (
           <>
@@ -255,6 +268,7 @@ export const PersonPage = () => {
             <PersonGroupsSummary personId={person.id!} />
             {canEdit && <PersonNotesSummary conversationId={person.conversationId || ""} onViewAll={() => setView("notes")} />}
             {showForms && <PersonFormsSummary person={person} forms={visibleForms} onOpen={(formId) => setView("forms", { form: formId || "" })} />}
+            {(canViewRequests || canViewRegistrations) && <PersonRequestsSummary personId={person.id!} canViewRequests={canViewRequests} canViewRegistrations={canViewRegistrations} onViewAll={() => setView("requests")} />}
           </>
         );
     }

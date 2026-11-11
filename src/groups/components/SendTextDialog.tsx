@@ -1,19 +1,24 @@
 import React from "react";
-import { TextField, Typography, Alert, Chip, Stack } from "@mui/material";
-import { Locale } from "@churchapps/apphelper";
+import { flushSync } from "react-dom";
+import { TextField, Typography, Alert, Chip, Stack, Box, FormControl, InputLabel, MenuItem, Select } from "@mui/material";
+import type { SelectChangeEvent } from "@mui/material";
+import { ApiHelper, Locale, Permissions, UserHelper } from "@churchapps/apphelper";
 import { useSendDialog } from "./useSendDialog";
 import { SendDialogShell } from "./SendDialogShell";
 
-const MERGE_FIELD_KEYS = [
+export const MERGE_FIELD_KEYS = [
   { key: "{{firstName}}", label: "groups.sendEmailDialog.mergeFieldFirstName" },
   { key: "{{lastName}}", label: "groups.sendEmailDialog.mergeFieldLastName" },
   { key: "{{displayName}}", label: "groups.sendEmailDialog.mergeFieldDisplayName" },
   { key: "{{churchName}}", label: "groups.sendEmailDialog.mergeFieldChurchName" }
 ];
 
+// Same for every recipient, so the dialog fills it in before sending.
+const GROUP_NAME_FIELD = { key: "{{groupName}}", label: "groups.sendEmailDialog.mergeFieldGroupName" };
+
 const MAX_LENGTH = 1600;
 
-const keepFocus = (ev: React.MouseEvent) => ev.preventDefault();
+export const keepFocus = (ev: React.MouseEvent) => ev.preventDefault();
 
 // Serving overview: every volunteer assigned in a date range.
 export interface TextRange {
@@ -31,6 +36,12 @@ interface Props {
   personName?: string;
   phoneNumber?: string;
   onClose: () => void;
+}
+
+interface TextTemplateOption {
+  id: string;
+  name: string;
+  category?: string;
 }
 
 interface PreviewData {
@@ -52,26 +63,48 @@ interface SendResult {
 export const SendTextDialog: React.FC<Props> = (props) => {
   const [message, setMessage] = React.useState("");
   const inputRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const [templates, setTemplates] = React.useState<TextTemplateOption[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = React.useState("");
+  const range = props.range;
+  const isGroupSend = !!props.groupId && !range;
+  const mergeFields = isGroupSend ? [...MERGE_FIELD_KEYS, GROUP_NAME_FIELD] : MERGE_FIELD_KEYS;
+  const resolveGroup = (text: string) => (isGroupSend ? text.replaceAll(GROUP_NAME_FIELD.key, props.groupName || "") : text);
 
   const insertMergeField = (field: string) => {
     const input = inputRef.current;
     const start = input?.selectionStart ?? message.length;
     const end = input?.selectionEnd ?? message.length;
     const next = message.slice(0, start) + field + message.slice(end);
-    if (next.length > MAX_LENGTH) return;
+    if (resolveGroup(next).length > MAX_LENGTH) return;
     const caret = start + field.length;
-    setMessage(next);
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      inputRef.current?.setSelectionRange(caret, caret);
-    });
+    // Commit now and place the caret in the same tick; a deferred caret lands after the next keystroke.
+    flushSync(() => setMessage(next));
+    inputRef.current?.focus();
+    inputRef.current?.setSelectionRange(caret, caret);
   };
 
-  const range = props.range;
+  // Text templates are rows in the email templates list with the "Text" category.
+  React.useEffect(() => {
+    ApiHelper.get("/emailTemplates", "MessagingApi")
+      .then((data: TextTemplateOption[]) => setTemplates((data || []).filter(t => t.category === "Text")))
+      .catch(() => setTemplates([]));
+  }, []);
+
+  const handleTemplateSelect = async (templateId: string) => {
+    setSelectedTemplateId(templateId);
+    if (!templateId) return;
+    try {
+      const full = await ApiHelper.get("/emailTemplates/" + templateId, "MessagingApi");
+      setMessage((full?.htmlContent || "").slice(0, MAX_LENGTH));
+    } catch {
+      setSelectedTemplateId("");
+    }
+  };
+
   const isGroupMode = !!props.groupId || !!range;
   const rangeQuery = range ? new URLSearchParams({ startDate: range.startDate, endDate: range.endDate, ministryId: range.ministryId, planTypeId: range.planTypeId || "" }).toString() : "";
   const previewUrl = range ? "/plans/textRange?" + rangeQuery : props.groupId ? "/texting/preview/" + props.groupId : null;
-  const charCount = message.length;
+  const charCount = resolveGroup(message).length;
   const segmentCount = charCount <= 160 ? 1 : Math.ceil(charCount / 153);
 
   const { sending, result, error, preview, loadingPreview, handleSend } = useSendDialog<PreviewData, SendResult>({
@@ -82,7 +115,7 @@ export const SendTextDialog: React.FC<Props> = (props) => {
       if (!message.trim()) return null;
       if (range) return { ...range, message };
       return isGroupMode
-        ? { groupId: props.groupId, message }
+        ? { groupId: props.groupId, message: resolveGroup(message) }
         : { personId: props.personId, phoneNumber: props.phoneNumber, personName: props.personName, message };
     },
     fallbackError: Locale.label("groups.sendTextDialog.fallbackError")
@@ -136,7 +169,7 @@ export const SendTextDialog: React.FC<Props> = (props) => {
     );
   };
 
-  const canSend = !sending && message.trim().length > 0 && (!isGroupMode || !preview || preview.eligibleCount > 0);
+  const canSend = !sending && message.trim().length > 0 && charCount <= MAX_LENGTH && (!isGroupMode || !preview || preview.eligibleCount > 0);
 
   return (
     <SendDialogShell
@@ -161,6 +194,26 @@ export const SendTextDialog: React.FC<Props> = (props) => {
             : error}
         </Alert>
       )}
+      {(templates.length > 0 || UserHelper.checkAccess(Permissions.membershipApi.settings.edit)) && (
+        <Box sx={{ mb: 2, display: "flex", alignItems: "center", gap: 1 }}>
+          {templates.length > 0 && (
+            <FormControl sx={{ flex: 1 }}>
+              <InputLabel id="text-template-label">{Locale.label("groups.sendTextDialog.loadTemplate")}</InputLabel>
+              <Select
+                labelId="text-template-label"
+                label={Locale.label("groups.sendTextDialog.loadTemplate")}
+                value={selectedTemplateId}
+                onChange={(e: SelectChangeEvent) => handleTemplateSelect(e.target.value)}
+                disabled={sending}
+              >
+                <MenuItem value=""><em>{Locale.label("groups.sendEmailDialog.none")}</em></MenuItem>
+                {templates.map((t) => <MenuItem key={t.id} value={t.id}>{t.name}</MenuItem>)}
+              </Select>
+            </FormControl>
+          )}
+          {UserHelper.checkAccess(Permissions.membershipApi.settings.edit) && <a href="/settings/email-templates" style={{ whiteSpace: "nowrap" }}>{Locale.label("groups.sendTextDialog.manageTemplates")}</a>}
+        </Box>
+      )}
       <TextField
         fullWidth
         multiline
@@ -177,7 +230,7 @@ export const SendTextDialog: React.FC<Props> = (props) => {
         {Locale.label("groups.sendTextDialog.mergeFieldHint")}
       </Typography>
       <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap data-testid="text-merge-fields">
-        {MERGE_FIELD_KEYS.map(f => (
+        {mergeFields.map(f => (
           <Chip key={f.key} label={Locale.label(f.label)} size="small" variant="outlined" disabled={sending} onMouseDown={keepFocus} onClick={() => insertMergeField(f.key)} sx={{ cursor: "pointer" }} />
         ))}
       </Stack>

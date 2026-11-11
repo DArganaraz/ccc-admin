@@ -15,11 +15,16 @@ const GROUP: Record<PaletteItem["t"], string> = { nav: "Menu", do: "Do", person:
 const ORDER: PaletteItem["t"][] = ["nav", "do", "person", "group", "plan", "fund", "jump"];
 const MAX = 12;
 
-export const matches = (item: PaletteItem, q: string) => (item.n + " " + (item.a || []).join(" ")).toLowerCase().includes(q);
+// Hyphens never matter ("b1 checkin" finds "B1 check-in"). When the whole phrase finds nothing, match word by word ("logo church").
+const fold = (s: string) => s.toLowerCase().replace(/-/g, "");
+const hay = (item: PaletteItem) => fold(item.n + " " + (item.a || []).join(" "));
+export const matches = (item: PaletteItem, q: string) => hay(item).includes(fold(q));
+const matchesWords = (item: PaletteItem, q: string) => fold(q).split(/\s+/).filter(Boolean).every((w) => hay(item).includes(w));
 
 export const filterItems = (items: PaletteItem[], query: string) => {
   const q = query.trim().toLowerCase();
-  const hits = q ? items.filter((i) => matches(i, q)) : items.filter((i) => i.t === "nav");
+  const phrase = q ? items.filter((i) => matches(i, q)) : items.filter((i) => i.t === "nav");
+  const hits = q && !phrase.length ? items.filter((i) => matchesWords(i, q)) : phrase;
   const sorted = ORDER.flatMap((t) => hits.filter((i) => i.t === t));
   return q ? sorted.slice(0, MAX) : sorted;
 };
@@ -60,7 +65,14 @@ export const CommandPalette: React.FC<{ menu: PaletteMenuItem[]; label: string; 
       const k = quickActions.map((q): PaletteItem => ({ n: q.label, t: "do", u: q.url, i: q.icon }));
       nav.push({ n: "Quick Actions", a: ["create", "add", "new", "set up", "get started"], t: "nav", u: "#quick", i: "bolt", k });
     }
-    return [...nav, ...server.filter((s) => !menu.some((m) => m.url === s.u))];
+    const all = [...nav, ...server.filter((s) => !menu.some((m) => m.url === s.u))].map((i): PaletteItem => ({ ...i, a: i.a && [...i.a] }));
+    // Sub-pages and quick actions are searchable too: a row with the same url takes the label as an alias, otherwise the child gets its own row.
+    all.filter((p) => p.t === "nav" && p.k).forEach((p) => p.k!.forEach((c) => {
+      const same = all.find((i) => i.u === c.u);
+      if (!same) all.push({ n: c.n, t: p.u === "#quick" ? "do" : "jump", u: c.u, i: c.i });
+      else if (same.n !== c.n) same.a = [...(same.a || []), c.n];
+    }));
+    return all;
   }, [catalog.data, menu, quickActions]);
 
   const current = React.useMemo(() => {
@@ -85,6 +97,15 @@ export const CommandPalette: React.FC<{ menu: PaletteMenuItem[]; label: string; 
     setExpanded(here ? [here.u] : []);
     setActive(child >= 0 ? current + 1 + child : current);
   }, [current, items, location.pathname]);
+  // A jump changes the URL right away but the router commits the new location only once the lazy page has loaded.
+  // Opened in between, the menu expanded the previous section; follow the route once it lands (unless the user is searching).
+  const openedAtPath = React.useRef(location.pathname);
+  React.useEffect(() => {
+    if (!open) { openedAtPath.current = location.pathname; return; }
+    if (openedAtPath.current === location.pathname) return;
+    openedAtPath.current = location.pathname;
+    if (!query) openPalette();
+  }, [open, location.pathname, query, openPalette]);
   // One section open at a time; with the others collapsed the section's row index equals its index in items.
   const toggle = (u: string) => {
     fromKeyboard.current = true;
@@ -92,8 +113,13 @@ export const CommandPalette: React.FC<{ menu: PaletteMenuItem[]; label: string; 
     setActive(items.findIndex((i) => i.t === "nav" && i.u === u));
   };
 
+  // On touch screens a programmatic focus raises the soft keyboard over the menu, so only autofocus with a fine pointer or a keyboard shortcut.
+  const openedByKey = React.useRef(false);
   React.useEffect(() => {
-    if (open) inputRef.current?.focus();
+    if (!open) return;
+    const touch = window.matchMedia?.("(pointer: coarse)").matches;
+    if (!touch || openedByKey.current) inputRef.current?.focus();
+    openedByKey.current = false;
   }, [open]);
 
   React.useEffect(() => {
@@ -101,9 +127,10 @@ export const CommandPalette: React.FC<{ menu: PaletteMenuItem[]; label: string; 
       const slash = e.key === "/" && !open && !e.metaKey && !e.ctrlKey && !e.altKey && !isTypingTarget(e.target);
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
-        if (open) close(); else openPalette();
+        if (open) close(); else { openedByKey.current = true; openPalette(); }
       } else if (slash) {
         e.preventDefault();
+        openedByKey.current = true;
         openPalette();
       } else if (e.key === "Escape" && open) {
         e.preventDefault();

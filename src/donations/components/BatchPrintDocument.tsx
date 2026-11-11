@@ -1,11 +1,14 @@
 import React from "react";
 import { ArrayHelper, DateHelper, CurrencyHelper, Locale } from "@churchapps/apphelper";
-import { type DonationInterface, type DonationBatchInterface, type FundInterface, type FundDonationInterface } from "@churchapps/helpers";
+import { type DonationInterface, type DonationBatchInterface, type FundInterface, type FundDonationInterface, type PersonInterface } from "@churchapps/helpers";
 import { Box, Table, TableBody, TableCell, TableRow, TableHead, Typography } from "@mui/material";
 import { PrintLightTheme } from "../../components/PrintLightTheme";
+import { PrintChurchHeader } from "../../components/PrintChurchHeader";
 
 interface Props {
   churchName?: string;
+  // Pass when the page already has the logo; otherwise PrintChurchHeader looks it up.
+  logoUrl?: string;
   batch: DonationBatchInterface;
   donations: DonationInterface[]; // person already populated
   fundDonations: FundDonationInterface[];
@@ -24,8 +27,14 @@ export const getFundTotals = (donationIds: string[], fundDonations: FundDonation
   return fundTotals;
 };
 
+// A plain string rather than a nested person, so the batch CSV export gains one column instead of the person's name and photo fields.
+export const setEnteredByName = (d: DonationInterface, people: PersonInterface[]) => {
+  const name = ArrayHelper.getOne(people, "id", (d as any).enteredBy)?.name?.display;
+  if (name) (d as any).enteredByName = name;
+};
+
 // Paper copy for the counting team: every gift, a subtotal per fund, and the batch total.
-export const BatchPrintDocument: React.FC<Props> = ({ churchName, batch, donations, fundDonations, funds, currency, rates, className }) => {
+export const BatchPrintDocument: React.FC<Props> = ({ churchName, logoUrl, batch, donations, fundDonations, funds, currency, rates, className }) => {
   const donationIds = donations.filter((d) => (d as any).status !== "refunded").map((d) => d.id || "");
   const fundTotals = Array.from(getFundTotals(donationIds, fundDonations, currency, rates).entries())
     .map(([fundId, amount]) => ({ name: ArrayHelper.getOne(funds, "id", fundId)?.name || "Unknown Fund", amount }))
@@ -39,7 +48,13 @@ export const BatchPrintDocument: React.FC<Props> = ({ churchName, batch, donatio
   return (
     <PrintLightTheme>
       <Box className={className} data-testid="batch-print-document">
-        {churchName && <Typography variant="h6" data-testid="batch-print-church">{churchName}</Typography>}
+        {churchName && (
+          <Box sx={{ textAlign: "center", borderBottom: 2, pb: 1, mb: 2 }}>
+            <PrintChurchHeader churchName={churchName} logoUrl={logoUrl} style={{ margin: "0 auto 8px" }}>
+              <Typography variant="h6" data-testid="batch-print-church">{churchName}</Typography>
+            </PrintChurchHeader>
+          </Box>
+        )}
         <Typography variant="h5">{batch?.name}</Typography>
         {batch?.batchDate && <Typography variant="subtitle1" gutterBottom>{DateHelper.prettyDate(new Date(batch.batchDate.split("T")[0] + "T00:00:00"))}</Typography>}
         <Table size="small">
@@ -57,7 +72,10 @@ export const BatchPrintDocument: React.FC<Props> = ({ churchName, batch, donatio
               const isRefunded = (d as any).status === "refunded";
               return (
                 <TableRow key={i}>
-                  <TableCell>{d.person?.name.display || Locale.label("donations.donations.anon")}</TableCell>
+                  <TableCell>
+                    {d.person?.name.display || Locale.label("donations.donations.anon")}
+                    {(d as any).enteredByName && <Typography variant="caption" sx={{ display: "block" }}>{Locale.label("donations.donations.enteredBy").replace("{name}", (d as any).enteredByName)}</Typography>}
+                  </TableCell>
                   <TableCell>{[d.method, d.methodDetails].filter(Boolean).join(" - ")}</TableCell>
                   <TableCell>{d.notes || ""}</TableCell>
                   <TableCell>{d.donationDate ? DateHelper.prettyDate(new Date(d.donationDate.split("T")[0] + "T00:00:00")) : ""}</TableCell>

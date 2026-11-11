@@ -8,13 +8,16 @@ export interface WorkflowStepActionInterface {
 }
 
 declare module "@churchapps/helpers" {
+  interface WorkflowInterface { workflowType?: string | null }
+  interface TaskInterface { assignmentId?: string | null }
+
   interface WorkflowBoardInterface {
     actions?: WorkflowStepActionInterface[];
   }
 }
 
 export const ACTION_TYPES = [
-  "delay", "sendEmail", "sendText", "addToGroup", "removeFromGroup", "addToWorkflow", "addNote", "setField", "webhook", "createTask"
+  "sendAssignmentRequest", "delay", "sendEmail", "sendText", "addToGroup", "removeFromGroup", "recordAttendance", "addToWorkflow", "addNote", "setField", "webhook", "createTask", "notifyPerson"
 ] as const;
 export type ActionType = (typeof ACTION_TYPES)[number];
 

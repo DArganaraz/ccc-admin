@@ -1,10 +1,12 @@
 import fs from "fs";
-import { request as pwRequest, type APIRequestContext, type Page } from "@playwright/test";
+import { request as pwRequest, test as plainTest, type APIRequestContext, type Page } from "@playwright/test";
 import { attendanceTest as test, expect } from "./helpers/test-fixtures";
 import { login } from "./helpers/auth";
 import { navigateToAttendance } from "./helpers/navigation";
 import { confirmDelete } from "./helpers/fixtures";
 import { STORAGE_STATE_PATH } from "./global-setup";
+import { mockChurchLogo } from "./helpers/print-logo";
+import { createLimitedRole, createNamesOnlyRole, deleteRole, loginAsVolunteer } from "./helpers/names-only-role";
 
 // /attendance opens on this week; Setup, Headcounts and All years are verbs, and the reports are pills (role=tab) inside All years.
 const openSetup = (page: Page) => page.getByTestId("attendance-verb-setup").click();
@@ -28,6 +30,8 @@ test.describe("Attendance Management", () => {
   test.describe.serial("Setup", () => {
     let page: Page;
     let createdServiceId = "";
+    let serviceTimesBefore = 0;
+    const serviceTimesCount = () => page.locator("span:has(> span:text-is('Service times')) > strong");
 
     test.beforeAll(async ({ browser }) => {
       const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
@@ -74,8 +78,12 @@ test.describe("Attendance Management", () => {
       await expect(page.getByRole("option", { name: "Sunday Morning Service" })).toBeVisible({ timeout: 10000 });
       await page.getByRole("option", { name: "Zebedee Test Service" }).click();
       await box.locator('[data-testid="service-time-name-input"] input').fill("Zacchaeus Test Time");
+      // ChurchAppsSupport#1336: the Service times count follows the save without a reload.
+      await expect(serviceTimesCount()).toHaveText(/^\d+$/, { timeout: 10000 });
+      serviceTimesBefore = Number(await serviceTimesCount().textContent());
       await box.getByRole("button", { name: "Save" }).click();
       await expect(page.locator("button").getByText("Zacchaeus Test Time")).toHaveCount(1, { timeout: 10000 });
+      await expect(serviceTimesCount()).toHaveText(String(serviceTimesBefore + 1), { timeout: 10000 });
     });
 
     test("should edit the service time", async () => {
@@ -126,6 +134,7 @@ test.describe("Attendance Management", () => {
       await box.getByRole("button", { name: "Delete" }).click();
       await confirmDelete(page);
       await expect(page.locator("button").getByText("Zebedee Test Time")).toHaveCount(0, { timeout: 10000 });
+      await expect(serviceTimesCount()).toHaveText(String(serviceTimesBefore), { timeout: 10000 });
     });
 
     test("should delete the service", async () => {
@@ -138,11 +147,42 @@ test.describe("Attendance Management", () => {
     });
   });
 
+  // A campus with no services shows its add-service button on its own row, not alone on the next one.
+  test("an empty campus keeps its add-service button on the campus row", async ({ browser }) => {
+    const campusName = "Zebedee Empty Campus 1502";
+    const api = await pwRequest.newContext();
+    const auth = await apiLogin(api);
+    const created = await api.post(`${API}/membership/campuses`, { ...auth, data: [{ name: campusName }] });
+    const campusId = (await created.json())[0].id;
+    const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+    try {
+      const page = await context.newPage();
+      await login(page);
+      await navigateToAttendance(page);
+      await openSetup(page);
+      await expect(page.getByTestId("add-service-button-" + campusId)).toBeVisible({ timeout: 15000 });
+      await expect(page.locator("tr", { hasText: campusName }).getByTestId("add-service-button-" + campusId)).toHaveCount(1);
+    } finally {
+      await context.close();
+      await api.delete(`${API}/membership/campuses/${campusId}`, auth);
+      await api.dispose();
+    }
+  });
+
   test("Setup is titled Service structure and points named attendance at the group's Sessions tab", async ({ page }) => {
     await openSetup(page);
     await expect(page.getByText("Service structure")).toBeVisible({ timeout: 10000 });
     await expect(page.locator('[data-testid="attendance-setup-helper"]')).toContainText("This page only assigns groups to service times.");
     await expect(page.getByText("Service times", { exact: true })).toBeVisible();
+  });
+
+  test("Setup shows a serving team's ministry name, not its id, as the category", async ({ page }) => {
+    await openSetup(page);
+    // Demo team "Band Members" belongs to the Worship ministry (GRP0000000a) and tracks attendance without a service time.
+    const row = page.locator("tr").filter({ has: page.locator("a", { hasText: "Band Members" }) });
+    await expect(row).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("GRP0000000a")).toHaveCount(0);
+    await expect(page.locator("tr").filter({ hasText: "Worship" }).filter({ has: page.locator("text=folder") }).first()).toBeVisible();
   });
 
   test("should view group from attendance homepage", async ({ page }) => {
@@ -218,11 +258,33 @@ test.describe("Attendance Management", () => {
       await page.locator("button").getByText("Run Report").click();
       await expect(page.locator("td").getByText("10:30 AM Service")).toBeVisible({ timeout: 10000 });
 
-      const churchLine = page.locator("#reportsBox .report-print-church");
+      const churchLine = page.locator('#reportsBox [data-testid="print-church-name"]');
       await expect(churchLine).toHaveText("Grace Community Church");
       await expect(churchLine).toBeHidden();
       await page.emulateMedia({ media: "print" });
       await expect(churchLine).toBeVisible();
+    });
+
+    test("Attendance Trend prints dark text, a light chart and the letterhead in dark mode", async ({ page }) => {
+      await page.addInitScript(() => localStorage.setItem("b1admin-theme-mode", "dark"));
+      await mockChurchLogo(page);
+      await page.goto("/reports/attendanceTrend");
+      const runBtn = page.locator("button").getByText("Run Report");
+      await expect(runBtn).toBeVisible({ timeout: 15000 });
+      await runBtn.click();
+      const box = page.locator("#reportsBox");
+      const cell = box.locator("table td").first();
+      await expect(cell).toBeVisible({ timeout: 15000 });
+      const chartBg = box.locator(".report-chart-container svg rect").first();
+      await expect(chartBg).toBeAttached({ timeout: 15000 });
+      await page.emulateMedia({ media: "print" });
+
+      const color = await cell.evaluate((n) => getComputedStyle(n).color);
+      const [r, g, b] = (color.match(/\d+/g) || []).map(Number);
+      expect(Math.max(r, g, b), `text color ${color}`).toBeLessThan(110);
+      await expect(box.locator('[data-testid="print-church-logo"]')).toBeVisible();
+      const fill = await chartBg.evaluate((n) => getComputedStyle(n).fill);
+      expect(fill, "chart background").not.toBe("rgb(30, 30, 30)");
     });
   });
 
@@ -284,9 +346,9 @@ test.describe("Attendance Management", () => {
       await page.locator('[name="endDate"]').fill("2024-03-09");
       const runBtn = page.locator("button").getByText("Run Report");
       await runBtn.click();
+      // Wait for a data row below the header; counting rows right away races the report load.
       const reportRows = page.locator('[id="reportsBox"] table tr');
-      await expect(reportRows.first()).toBeVisible({ timeout: 10000 });
-      expect(await reportRows.count()).toBeGreaterThan(1);
+      await expect(reportRows.nth(1)).toBeVisible({ timeout: 10000 });
     });
 
     test("Group Attendance covers a date range and downloads one dated column per session", async ({ page }) => {
@@ -315,6 +377,12 @@ test.describe("Attendance Management", () => {
       expect(header).toContain('"Sunday Morning Service - 9:00 AM Service (2024-03-16)"');
       expect(header).toContain('"Sunday Morning Service - 9:00 AM Service (2024-03-17)"');
       expect(csv).toContain("present");
+    });
+
+    test("daily group attendance report title has no unfilled placeholder", async ({ page }) => {
+      await page.goto("/reports/dailyGroupAttendance");
+      await expect(page.getByText("Group attendance by day", { exact: true }).first()).toBeVisible({ timeout: 15000 });
+      await expect(page.getByText("{groupName}")).toHaveCount(0);
     });
 
     test("Attendance Trend Run Report enabled only after selecting filters", async ({ page }) => {
@@ -392,7 +460,54 @@ test.describe("Attendance Management", () => {
         else groups[groups.length - 1]?.push(r.text);
       });
       expect(groups.flat().length).toBeGreaterThan(0);
-      groups.forEach((names) => expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b))));
+      // The report sorts people.sortName ("Last, First") while the cell shows "First Last".
+      const sortName = (name: string) => {
+        const parts = name.split(/\s+/);
+        const last = parts.pop() || "";
+        return `${last}, ${parts.join(" ")}`;
+      };
+      groups.forEach((names) => expect(names).toEqual([...names].sort((a, b) => sortName(a).localeCompare(sortName(b)))));
+    });
+  });
+
+  test.describe("Group Attendance without a service time", () => {
+    // Greeters Ministry has no service time; its sessions still belong in Group Attendance.
+    const GREETERS = "GRP00000025";
+    let sessionId = "";
+
+    test.beforeAll(async () => {
+      const api = await pwRequest.newContext();
+      const auth = await apiLogin(api);
+      const existing = await (await api.get(`${API}/attendance/sessions?groupId=${GREETERS}`, auth)).json();
+      for (const s of existing || []) if (String(s.sessionDate).startsWith("2026-10-11")) await api.delete(`${API}/attendance/sessions/${s.id}`, auth);
+      const res = await api.post(`${API}/attendance/sessions`, { ...auth, data: [{ groupId: GREETERS, sessionDate: "2026-10-11T09:30:00" }] });
+      sessionId = (await res.json())[0].id;
+      await api.post(`${API}/attendance/visitsessions/log`, { ...auth, data: { personId: "PER00000029", visitSessions: [{ sessionId }] } });
+      await api.dispose();
+    });
+
+    test.afterAll(async () => {
+      const api = await pwRequest.newContext();
+      const auth = await apiLogin(api);
+      if (sessionId) await api.delete(`${API}/attendance/sessions/${sessionId}`, auth);
+      await api.dispose();
+    });
+
+    test("Group Attendance includes a group with no service time", async ({ page }) => {
+      await page.goto("/attendance");
+      await page.getByTestId("attendance-verb-years").click();
+      // The tab loads the report and auto-runs its default week; fill the dates only after that so they stick.
+      const autoRun = page.waitForResponse((r) => r.url().includes("/reports/groupAttendance/run"));
+      await page.locator('button[role="tab"]').getByText("Group Attendance", { exact: true }).click();
+      await autoRun;
+      await page.locator('[name="startDate"]').fill("2026-10-11");
+      await page.locator('[name="endDate"]').fill("2026-10-11");
+      await expect(page.locator('[name="startDate"]')).toHaveValue("2026-10-11");
+      await expect(page.locator('[name="endDate"]')).toHaveValue("2026-10-11");
+      await page.locator("button").getByText("Run Report").click();
+      const reportsBox = page.locator('[id="reportsBox"]');
+      await expect(reportsBox.locator("td").getByText("Greeters Ministry", { exact: true })).toBeVisible({ timeout: 15000 });
+      await expect(reportsBox.locator("td").getByText("Olivia Davis", { exact: true })).toBeVisible();
     });
   });
 
@@ -419,6 +534,26 @@ test.describe("Attendance Management", () => {
 
       const addSlideBtn = page.locator("button").getByText("Add Slide");
       await expect(addSlideBtn).toBeVisible();
+    });
+
+    test("an unchecked switch track has at least 3:1 contrast on white", async ({ page }) => {
+      await page.goto("/mobile/checkin");
+      const track = page.locator(".MuiSwitch-root").first().locator(".MuiSwitch-track");
+      await expect(track).toBeVisible({ timeout: 15000 });
+      const checkbox = page.locator(".MuiSwitch-root").first().locator("input");
+      if (await checkbox.isChecked()) await checkbox.click();
+      await expect(checkbox).not.toBeChecked();
+      // Blend the track color with white by its alpha, then take the WCAG contrast ratio against white.
+      const ratio = await track.evaluate((el) => {
+        const s = getComputedStyle(el);
+        const [r, g, b, a = 1] = (s.backgroundColor.match(/[\d.]+/g) || []).map(Number);
+        const alpha = a * Number(s.opacity);
+        const mix = (c: number) => (c * alpha + 255 * (1 - alpha)) / 255;
+        const lin = (c: number) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+        const L = 0.2126 * lin(mix(r)) + 0.7152 * lin(mix(g)) + 0.0722 * lin(mix(b));
+        return 1.05 / (L + 0.05);
+      });
+      expect(ratio).toBeGreaterThanOrEqual(3);
     });
   });
 
@@ -521,4 +656,52 @@ test.describe("Attendance Management", () => {
     });
   });
 
+});
+
+// ChurchAppsSupport#1284: a user whose only people permission is View Names can record attendance but not open Setup.
+plainTest.describe("View People Names Only", () => {
+  plainTest.use({ storageState: { cookies: [], origins: [] } });
+  let roleId = "";
+  plainTest.beforeAll(async () => { roleId = await createNamesOnlyRole("Issue 1284 Names Only (attendance)"); });
+  plainTest.afterAll(async () => { await deleteRole(roleId); });
+
+  plainTest("attendance shows Record but not Setup", async ({ page }) => {
+    await loginAsVolunteer(page);
+    await page.goto("/attendance");
+    await expect(page.getByTestId("attendance-record")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("attendance-verb-setup")).toHaveCount(0);
+
+    await page.goto("/attendance?view=setup");
+    await expect(page.getByTestId("attendance-record")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("attendance-verb-setup")).toHaveCount(0);
+    await expect(page.getByTestId("attendance-setup-helper")).toHaveCount(0);
+    await expect(page.locator('[data-testid^="add-service-button-"]')).toHaveCount(0);
+  });
+});
+
+// ChurchAppsSupport#1399: a volunteer who can view attendance but not edit services should not be offered Setup.
+plainTest.describe("Attendance Setup needs Edit Services", () => {
+  plainTest.use({ storageState: { cookies: [], origins: [] } });
+  let roleId = "";
+  plainTest.beforeAll(async () => {
+    roleId = await createLimitedRole("Issue 1399 Attendance View", [
+      { apiName: "MembershipApi", contentType: "People", action: "View Names" },
+      { apiName: "AttendanceApi", contentType: "Attendance", action: "View" },
+      { apiName: "AttendanceApi", contentType: "Attendance", action: "Checkin" }
+    ]);
+  });
+  plainTest.afterAll(async () => { await deleteRole(roleId); });
+
+  plainTest("View Attendance without Edit Services hides Setup", async ({ page }) => {
+    await loginAsVolunteer(page);
+    await page.goto("/attendance");
+    await expect(page.getByTestId("attendance-verb-years")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("attendance-verb-setup")).toHaveCount(0);
+
+    await page.goto("/attendance?view=setup");
+    await expect(page.getByTestId("attendance-verb-years")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("attendance-verb-setup")).toHaveCount(0);
+    await expect(page.getByTestId("attendance-setup-helper")).toHaveCount(0);
+    await expect(page.locator('[data-testid^="add-service-button-"]')).toHaveCount(0);
+  });
 });

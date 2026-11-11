@@ -1,9 +1,9 @@
-import { type Page } from "@playwright/test";
+import { type Page, request } from "@playwright/test";
 import { donationsTest as test, expect } from "./helpers/test-fixtures";
 import { fillFundForm } from "./helpers/donations";
 import { login } from "./helpers/auth";
 import { navigateToDonations, siblingNav } from "./helpers/navigation";
-import { confirmDelete } from "./helpers/fixtures";
+import { confirmDelete, personAddButton } from "./helpers/fixtures";
 import { STORAGE_STATE_PATH } from "./global-setup";
 
 const TEST_FUND = "Zacchaeus Building Fund";
@@ -76,7 +76,7 @@ test.describe.serial("Pledge Campaigns", () => {
 
   test("should open campaign detail and add pledge", async () => {
     await page.locator("a").getByText(TEST_CAMPAIGN, { exact: true }).click();
-    await expect(page).toHaveURL(/\/donations\/campaigns\/\w+/, { timeout: 10000 });
+    await expect(page).toHaveURL(/\/donations\/campaigns\/[\w-]+/, { timeout: 10000 });
 
     const addPledgeBtn = page.locator('[data-testid="add-pledge-button"]');
     await expect(addPledgeBtn).toBeVisible({ timeout: 10000 });
@@ -86,7 +86,7 @@ test.describe.serial("Pledge Campaigns", () => {
     await expect(box).toBeVisible({ timeout: 10000 });
     await box.locator('input[name="personAddText"]').fill(TEST_PERSON);
     await box.locator('[data-testid="search-button"]').click();
-    const personResult = box.locator('[data-testid^="add-person-"]').first();
+    const personResult = personAddButton(box, TEST_PERSON);
     await expect(personResult).toBeVisible({ timeout: 10000 });
     await personResult.click();
 
@@ -165,5 +165,36 @@ test.describe.serial("Pledge Campaigns", () => {
     await confirmDelete(page);
     await fundDelete;
     await expect(page.locator("a").getByText(TEST_FUND, { exact: true })).toHaveCount(0, { timeout: 10000 });
+  });
+});
+
+// Deleting a campaign from its detail view (Edit Campaign → Delete) returns to the campaign list instead of a dead page.
+test.describe("Campaign detail view", () => {
+  test.describe.configure({ retries: 0 });
+  const API = process.env.API_BASE || "http://localhost:8084";
+
+  test("Edit Campaign → Delete goes back to the campaign list", async ({ page }) => {
+    const ctx = await request.newContext();
+    const body = await (await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+    const uc = body.userChurches.find((c: any) => c.church?.id === "CHU00000001");
+    const auth = { headers: { Authorization: "Bearer " + uc.jwt } };
+    const name = "Zebedee Doomed Campaign " + Date.now();
+    const campaignId = (await (await ctx.post(`${API}/giving/campaigns`, { ...auth, data: [{ name, fundId: "FUN00000001", startDate: "2026-01-01", goalAmount: 1000 }] })).json())[0].id;
+    try {
+      await page.goto("/donations/campaigns/" + campaignId);
+      // Like Batches and Funds, the breadcrumb leads back to the list the campaign came from.
+      await expect(page.locator("#page-header-breadcrumbs").getByRole("button", { name: "Campaigns" })).toBeVisible();
+      await page.getByTestId("edit-campaign-button").click();
+      const deleted = page.waitForResponse((r) => r.url().includes("/giving/campaigns/" + campaignId) && r.request().method() === "DELETE");
+      await page.locator("#campaignBox").getByRole("button", { name: "Delete" }).click();
+      await confirmDelete(page);
+      await deleted;
+      await expect(page).toHaveURL(/\/donations\/campaigns$/);
+      await expect(page.getByTestId("add-campaign-button")).toBeVisible();
+      await expect(page.locator("a").getByText(name)).toHaveCount(0);
+    } finally {
+      await ctx.delete(`${API}/giving/campaigns/${campaignId}`, auth).catch(() => {});
+      await ctx.dispose();
+    }
   });
 });

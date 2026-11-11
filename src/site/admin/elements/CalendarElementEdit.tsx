@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import type { SelectChangeEvent } from "@mui/material";
-import { FormControl, InputLabel, Select, MenuItem } from "@mui/material";
+import { FormControl, InputLabel, Select, MenuItem, TextField } from "@mui/material";
 import { ApiHelper, Loading, Locale } from "@churchapps/apphelper";
 import type { GroupInterface, CuratedCalendarInterface } from "@churchapps/helpers";
 
 interface Props {
   parsedData: any;
-  handleChange: (e: React.ChangeEvent<HTMLInputElement> | SelectChangeEvent<string>) => void;
+  handleChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement> | SelectChangeEvent<string>) => void;
 }
 
 export const CalendarElementEdit = ({ parsedData, handleChange }: Props) => {
@@ -42,6 +42,25 @@ export const CalendarElementEdit = ({ parsedData, handleChange }: Props) => {
           <MenuItem value="upcoming">{Locale.label("site.calendarElementEdit.displayUpcoming")}</MenuItem>
         </Select>
       </FormControl>
+      {parsedData.display === "upcoming" && (
+        <FormControl fullWidth sx={{ mt: 2 }}>
+          <InputLabel>{Locale.label("site.calendarElementEdit.layout")}</InputLabel>
+          <Select fullWidth size="small" label={Locale.label("site.calendarElementEdit.layout")} name="layout" onChange={handleChange} value={parsedData.layout || "grid"} data-testid="calendar-layout-select">
+            <MenuItem value="grid">{Locale.label("site.calendarElementEdit.layoutGrid")}</MenuItem>
+            <MenuItem value="autoscroll">{Locale.label("site.calendarElementEdit.layoutAutoscroll")}</MenuItem>
+          </Select>
+        </FormControl>
+      )}
+      {parsedData.display === "upcoming" && parsedData.calendarType === "curated" && (
+        <FormControl fullWidth sx={{ mt: 2 }}>
+          <InputLabel>{Locale.label("site.calendarElementEdit.groupBadge")}</InputLabel>
+          <Select fullWidth size="small" label={Locale.label("site.calendarElementEdit.groupBadge")} name="groupBadge" onChange={handleChange} value={parsedData.groupBadge || "hide"} data-testid="calendar-group-badge-select">
+            <MenuItem value="hide">{Locale.label("site.calendarElementEdit.groupBadgeHide")}</MenuItem>
+            <MenuItem value="show">{Locale.label("site.calendarElementEdit.groupBadgeShow")}</MenuItem>
+          </Select>
+        </FormControl>
+      )}
+      <TextField fullWidth size="small" sx={{ mt: 2 }} label={Locale.label("site.calendarElementEdit.tag")} name="tag" value={parsedData.tag || ""} onChange={handleChange} helperText={Locale.label("site.calendarElementEdit.tagHelp")} data-testid="calendar-tag-input" />
     </>
   );
 };

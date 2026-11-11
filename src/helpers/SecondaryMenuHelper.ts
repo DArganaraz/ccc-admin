@@ -1,5 +1,6 @@
 import { Locale, UserHelper, Permissions } from "@churchapps/apphelper";
 import { hasPlansEditAccess } from "./PlanPermissionHelper";
+import { canSeeBatches } from "../donations/batchAccess";
 
 interface MenuItem {
   url: string;
@@ -15,7 +16,7 @@ export class SecondaryMenuHelper {
     else if (path.startsWith("/mobile")) result = this.getMobileMenu(path);
     else if (path.startsWith("/settings") || path.startsWith("/admin")) result = this.getSettingsMenu(path);
     else if (path.startsWith("/serving")) result = this.getServingMenu(path, data);
-    else if (path.startsWith("/donations")) result = this.getDonationsMenu(path);
+    else if (path.startsWith("/donations")) result = this.getDonationsMenu(path, data);
     else if (path.startsWith("/calendars") || path.startsWith("/registrations")) result = this.getCalendarMenu(path);
     else if (path.startsWith("/site")) result = this.getSiteMenu(path);
     else if (path.startsWith("/sermons")) result = this.getSermonsMenu(path);
@@ -27,14 +28,17 @@ export class SecondaryMenuHelper {
   static getPeopleMenu = (path: string, data: any) => {
     const menuItems: MenuItem[] = [];
     let label: string = "";
-    menuItems.push({ url: "/people", label: Locale.label("components.wrapper.ppl"), icon: "person" });
+    if (UserHelper.checkAccess(Permissions.membershipApi.people.view)) menuItems.push({ url: "/people", label: Locale.label("components.wrapper.ppl"), icon: "person" });
     menuItems.push({ url: "/groups", label: Locale.label("components.wrapper.groups"), icon: "groups" });
     if (UserHelper.checkAccess(Permissions.attendanceApi.attendance.viewSummary)) menuItems.push({ url: "/attendance", label: Locale.label("components.wrapper.att"), icon: "calendar_month" });
     if (data?.formPermission) menuItems.push({ url: "/forms", label: Locale.label("components.wrapper.forms"), icon: "description" });
+    // Notes overview: person notes need people.edit, group notes are for that group's leaders.
+    if (UserHelper.checkAccess(Permissions.membershipApi.people.edit) || UserHelper.currentUserChurch?.groups?.some((g) => g.leader)) menuItems.push({ url: "/people/notes", label: Locale.label("people.notesPage.title"), icon: "sticky_note_2" });
 
     if (path.startsWith("/groups") && data?.search?.includes("tag=team")) label = Locale.label("components.wrapper.teams");
     else if (path.startsWith("/groups")) label = Locale.label("components.wrapper.groups");
     else if (path.startsWith("/people/demographics")) label = Locale.label("people.demographics.title");
+    else if (path.startsWith("/people/notes")) label = Locale.label("people.notesPage.title");
     else if (path.startsWith("/people")) label = Locale.label("components.wrapper.ppl");
     else if (path.startsWith("/attendance")) label = Locale.label("components.wrapper.att");
     else if (path.startsWith("/forms")) label = Locale.label("components.wrapper.forms");
@@ -74,11 +78,15 @@ export class SecondaryMenuHelper {
       menuItems.push({ url: "/mobile/checkin", label: Locale.label("common.b1CheckIn"), icon: "qr_code" });
       menuItems.push({ url: "/mobile/checkin/labels", label: Locale.label("common.labels"), icon: "label" });
     }
+    if (UserHelper.checkAccess(Permissions.contentApi.content.edit) || UserHelper.checkAccess(Permissions.membershipApi.groupMembers.edit)) {
+      menuItems.push({ url: "/mobile/notifications", label: Locale.label("mobile.pushNotifications.title", "Push Notifications"), icon: "notifications_active" });
+    }
 
     if (path.startsWith("/mobile/theme")) label = Locale.label("common.appTheme");
     else if (path.startsWith("/mobile/b1-mobile")) label = Locale.label("common.b1Mobile");
     else if (path.startsWith("/mobile/checkin/labels")) label = Locale.label("common.labels");
     else if (path.startsWith("/mobile/checkin")) label = Locale.label("common.b1CheckIn");
+    else if (path.startsWith("/mobile/notifications")) label = Locale.label("mobile.pushNotifications.title", "Push Notifications");
     else if (path.startsWith("/mobile")) label = Locale.label("common.navigation");
 
     return { menuItems, label };
@@ -113,16 +121,16 @@ export class SecondaryMenuHelper {
     return { menuItems, label };
   };
 
-  static getDonationsMenu = (path: string) => {
+  static getDonationsMenu = (path: string, data?: any) => {
     const menuItems: MenuItem[] = [];
     let label: string = "";
     if (UserHelper.checkAccess(Permissions.givingApi.donations.viewSummary)) menuItems.push({ url: "/donations", label: Locale.label("donations.donations.summary"), icon: "volunteer_activism" });
-    if (UserHelper.checkAccess(Permissions.givingApi.donations.viewSummary)) menuItems.push({ url: "/donations/batches", label: Locale.label("donations.donations.batches"), icon: "folder" });
+    if (canSeeBatches()) menuItems.push({ url: "/donations/batches", label: Locale.label("donations.donations.batches"), icon: "folder" });
     if (UserHelper.checkAccess(Permissions.givingApi.donations.viewSummary)) menuItems.push({ url: "/donations/funds", label: Locale.label("donations.donations.funds"), icon: "account_balance" });
     if (UserHelper.checkAccess(Permissions.givingApi.donations.viewSummary)) menuItems.push({ url: "/donations/campaigns", label: Locale.label("donations.donations.campaigns"), icon: "flag" });
     if (UserHelper.checkAccess(Permissions.givingApi.donations.viewSummary)) menuItems.push({ url: "/donations/statements", label: Locale.label("donations.donations.statements") || "Giving Statements", icon: "description" });
     if (UserHelper.checkAccess(Permissions.givingApi.donations.view)) menuItems.push({ url: "/donations/failed", label: Locale.label("donations.donations.failed"), icon: "error_outline" });
-    if (UserHelper.checkAccess(Permissions.givingApi.donations.edit)) menuItems.push({ url: "/donations/stripe-import", label: Locale.label("helpers.secondaryMenuHelper.stripeImport"), icon: "upload_file" });
+    if (UserHelper.checkAccess(Permissions.givingApi.donations.edit) && data?.usesStripe) menuItems.push({ url: "/donations/stripe-import", label: Locale.label("helpers.secondaryMenuHelper.stripeImport"), icon: "upload_file" });
 
     if (path.startsWith("/donations/failed")) label = Locale.label("donations.donations.failed");
     else if (path.startsWith("/donations/stripe-import")) label = Locale.label("helpers.secondaryMenuHelper.stripeImport");

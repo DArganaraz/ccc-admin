@@ -2,20 +2,29 @@ import { ApiHelper, Locale, Permissions, UserHelper } from "@churchapps/apphelpe
 import React, { useEffect, useMemo } from "react";
 
 import { SecondaryMenuHelper } from "../helpers/SecondaryMenuHelper";
-import { hasPlansEditAccess } from "../helpers";
+import { canRecordAttendance, hasPlansEditAccess } from "../helpers";
+import { canSeeBatches } from "../donations/batchAccess";
+import { usesStripeGateway } from "../donations/stripeGateway";
+import { useQuery } from "@tanstack/react-query";
 import { SiteHeader } from "@churchapps/apphelper";
 import { ThemeMenuControls } from "./ThemeMenuControls";
 import UserContext from "../UserContext";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { CommandPalette } from "./commandPalette/CommandPalette";
+import { HYMNS_ENABLED } from "../hymns/enabled";
 
 export const Header: React.FC = () => {
   const context = React.useContext(UserContext);
   const navigate = useNavigate();
+  // Subscribe to route changes: the labels below are derived from the URL, and this header stays mounted across navigation.
+  const location = useLocation();
   const formPermission = UserHelper.checkAccess(Permissions.membershipApi.forms.admin) || UserHelper.checkAccess(Permissions.membershipApi.forms.edit);
   const [donationError, setDonationError] = React.useState<boolean>(false);
   const [isFormMember, setIsFormMember] = React.useState<boolean>(false);
   const [isMinistryMember, setIsMinistryMember] = React.useState<boolean>(false);
+  const canEditDonations = UserHelper.checkAccess(Permissions.givingApi.donations.edit);
+  const gateways = useQuery<{ provider?: string }[]>({ queryKey: ["/gateways", "GivingApi"], placeholderData: [], enabled: canEditDonations });
+  const usesStripe = usesStripeGateway(gateways.data);
 
   useEffect(() => {
     if (UserHelper.checkAccess(Permissions.givingApi.donations.viewSummary)) {
@@ -38,14 +47,17 @@ export const Header: React.FC = () => {
     const menuItems: { url: string; icon: string; label: string }[] = [];
     menuItems.push({ url: "/", icon: "home", label: Locale.label("components.wrapper.dash") });
     if (UserHelper.checkAccess(Permissions.membershipApi.people.view)) menuItems.push({ url: "/people", icon: "person", label: Locale.label("components.wrapper.ppl") });
+    else if (UserHelper.checkAccess(Permissions.membershipApi.people.viewNames) && canRecordAttendance()) menuItems.push({ url: "/groups", icon: "person", label: Locale.label("components.wrapper.ppl") });
     else if (formPermission || isFormMember) menuItems.push({ url: "/forms", icon: "person", label: Locale.label("components.wrapper.ppl") });
     if (UserHelper.checkAccess(Permissions.givingApi.donations.viewSummary)) menuItems.push({ url: "/donations", label: Locale.label("components.wrapper.don"), icon: donationIcon });
+    else if (canSeeBatches()) menuItems.push({ url: "/donations/batches", label: Locale.label("components.wrapper.don"), icon: donationIcon });
 
     const canViewPlans = hasPlansEditAccess() || isMinistryMember;
     if (canViewPlans) menuItems.push({ url: "/serving", label: Locale.label("components.wrapper.serving"), icon: "assignment" });
     else menuItems.push({ url: "/serving/tasks", label: Locale.label("components.wrapper.serving"), icon: "assignment" });
 
     if (UserHelper.checkAccess(Permissions.contentApi.streamingServices.edit)) menuItems.push({ url: "/sermons", label: Locale.label("common.sermons"), icon: "live_tv" });
+    if (HYMNS_ENABLED && UserHelper.checkAccess(Permissions.contentApi.content.edit)) menuItems.push({ url: "/hymns", label: "Hymns", icon: "menu_book" });
     if (UserHelper.checkAccess(Permissions.contentApi.content.edit)) menuItems.push({ url: "/site/pages", label: Locale.label("common.website"), icon: "language" });
     if (UserHelper.checkAccess(Permissions.contentApi.content.edit)) menuItems.push({ url: "/calendars", label: Locale.label("helpers.secondaryMenuHelper.calendars"), icon: "calendar_month" });
     if (UserHelper.checkAccess(Permissions.contentApi.content.edit) || UserHelper.checkAccess(Permissions.membershipApi.settings.edit)) menuItems.push({ url: "/mobile", label: Locale.label("common.mobile"), icon: "phone_iphone" });
@@ -64,15 +76,16 @@ export const Header: React.FC = () => {
   }*/
 
   const getPrimaryLabel = () => {
-    const path = window.location.pathname;
+    const path = location.pathname;
     let result = Locale.label("dashboard.dashboardPage.dash");
     if (path.startsWith("/people")) result = Locale.label("components.wrapper.ppl");
     else if (path.startsWith("/attendance")) result = Locale.label("components.wrapper.ppl");
     else if (path.startsWith("/groups")) result = Locale.label("components.wrapper.ppl");
     else if (path.startsWith("/forms")) result = Locale.label("components.wrapper.ppl");
     else if (path.startsWith("/donations")) result = Locale.label("components.wrapper.don");
-    else if (path.startsWith("/serving") || window.location.search.indexOf("tag=") > -1) result = Locale.label("components.wrapper.serving");
+    else if (path.startsWith("/serving") || location.search.indexOf("tag=") > -1) result = Locale.label("components.wrapper.serving");
     else if (path.startsWith("/sermons")) result = Locale.label("common.sermons");
+    else if (HYMNS_ENABLED && path.startsWith("/hymns")) result = "Hymns";
     else if (path.startsWith("/calendars") || path.startsWith("/registrations")) result = Locale.label("helpers.secondaryMenuHelper.calendars");
     else if (path.startsWith("/site")) result = Locale.label("common.website");
     else if (path.startsWith("/mobile")) result = Locale.label("common.mobile");
@@ -82,9 +95,9 @@ export const Header: React.FC = () => {
     return result;
   };
 
-  const secondaryMenu = SecondaryMenuHelper.getSecondaryMenu(window.location.pathname, { formPermission, search: window.location.search, isMinistryMember });
+  const secondaryMenu = SecondaryMenuHelper.getSecondaryMenu(location.pathname, { formPermission, search: location.search, isMinistryMember, usesStripe });
 
-  const paletteMenu = useMemo(() => primaryMenu.map((m) => ({ ...m, children: SecondaryMenuHelper.getSecondaryMenu(m.url, { formPermission, search: "", isMinistryMember }).menuItems })), [primaryMenu, formPermission, isMinistryMember]);
+  const paletteMenu = useMemo(() => primaryMenu.map((m) => ({ ...m, children: SecondaryMenuHelper.getSecondaryMenu(m.url, { formPermission, search: "", isMinistryMember, usesStripe }).menuItems })), [primaryMenu, formPermission, isMinistryMember, usesStripe]);
 
   const handleNavigate = (url: string) => {
     navigate(url);
@@ -114,7 +127,8 @@ export const Header: React.FC = () => {
         "/mobile": "nav-item-mobile",
         "/site/pages": "nav-item-website",
         "/calendars": "nav-item-calendars",
-        "/sermons": "nav-item-sermons"
+        "/sermons": "nav-item-sermons",
+        "/hymns": "nav-item-hymns"
       };
 
       const scopes = document.querySelectorAll("header:not(#page-header), .MuiDrawer-root");
