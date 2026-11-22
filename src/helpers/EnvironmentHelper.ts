@@ -59,7 +59,9 @@ export class EnvironmentHelper {
     common.AskApi = "https://askapi.churchapps.org";
     common.GoogleAnalyticsTag = "";
     EnvironmentHelper.LessonsApi = "https://api.lessons.church";
-    EnvironmentHelper.B1Url = origin;
+    // MyConnect runs one church per campus, each on its own address (my., west.connectcity.church), so public links
+    // (forms, giving, QR codes) follow the church being edited: the image build sets https://{subdomain}.connectcity.church.
+    EnvironmentHelper.B1Url = process.env.REACT_APP_B1_WEBSITE_URL || origin;
   };
 
   static initDev = () => {

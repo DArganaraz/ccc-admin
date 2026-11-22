@@ -14,8 +14,9 @@ concurrency:
   group: myconnect-image
   cancel-in-progress: false
 
-# No addresses are baked in: the image is upstream's self-host build (the Dockerfile sets the
-# selfhost stage) and works out every URL from the browser's address at runtime.
+# The image is upstream's self-host build (the Dockerfile sets the selfhost stage) and works out
+# Admin and API addresses from the browser's address at runtime. The one baked-in value is the
+# member-site template for public links: each campus church is on <subdomain>.connectcity.church.
 
 jobs:
   build:
@@ -39,6 +40,8 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
+          build-args: |
+            REACT_APP_B1_WEBSITE_URL=https://{subdomain}.connectcity.church
           push: true
           tags: |
             ghcr.io/darganaraz/ccc-admin:${{ steps.tag.outputs.sha }}

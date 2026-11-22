@@ -7,6 +7,9 @@ RUN yarn install --immutable && yarn postinstall
 COPY . .
 # Self-host image: served under /admin, every URL derived from the browser origin at runtime.
 ENV REACT_APP_STAGE=selfhost VITE_BASE_PATH=/admin/
+# MyConnect: member-site address template for public links, e.g. https://{subdomain}.connectcity.church (empty = this origin).
+ARG REACT_APP_B1_WEBSITE_URL=""
+ENV REACT_APP_B1_WEBSITE_URL=$REACT_APP_B1_WEBSITE_URL
 RUN yarn build
 
 FROM node:22-slim
