@@ -176,6 +176,53 @@ test.describe.serial("Mobile tab lifecycle", () => {
   });
 });
 
+// ChurchAppsSupport#1545: a tab's image can be removed, so the tab drops back to a plain link in the app.
+test.describe.serial("Mobile tab image", () => {
+  test.describe.configure({ retries: 0 });
+  const TAB = "Zacchaeus Photo Tab";
+  let page: Page;
+  let ctx: APIRequestContext;
+  let jwt: string;
+  let tabId: string;
+
+  test.beforeAll(async ({ browser }) => {
+    ctx = await pwRequest.newContext();
+    jwt = await apiLogin(ctx);
+    const res = await ctx.post(`${API}/content/links`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+      data: [{ churchId: CHURCH_ID, category: "b1Tab", linkType: "url", url: "https://example.org", text: TAB, icon: "home", photo: "/images/demo/church-light.png", sort: 99, visibility: "everyone" }]
+    });
+    expect(res.ok()).toBeTruthy();
+    tabId = (await res.json())[0].id;
+    const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+    page = await context.newPage();
+    await login(page);
+  });
+
+  test.afterAll(async () => {
+    if (tabId) await ctx.delete(`${API}/content/links/${tabId}`, { headers: { Authorization: `Bearer ${jwt}` } });
+    await ctx?.dispose();
+    await page?.context().close();
+  });
+
+  test("Remove Image clears the tab's image and saves it without one", async () => {
+    await openMobileSettings(page);
+    const row = await findTabRow(page, TAB);
+    await row.getByRole("button", { name: "Edit" }).click();
+    await expect(page.locator('input[name="text"]')).toHaveValue(TAB, { timeout: 10000 });
+    await expect(page.getByRole("button", { name: "Change Image", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Remove Image", exact: true }).click();
+    await expect(page.getByRole("img", { name: "Tab icon" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Remove Image", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Select Image", exact: true })).toBeVisible();
+    const saved = page.waitForResponse(r => r.url().includes("/links") && r.request().method() === "POST" && r.status() === 200, { timeout: 15000 });
+    await page.getByRole("button", { name: /Save Tab/i }).click();
+    await saved;
+    const link = await (await ctx.get(`${API}/content/links/${tabId}`, { headers: { Authorization: `Bearer ${jwt}` } })).json();
+    expect(link.photo || "").toBe("");
+  });
+});
+
 // ChurchAppsSupport#1503: Requests opens the member's My Requests screen in the app.
 test.describe.serial("Mobile Requests tab", () => {
   test.describe.configure({ retries: 0 });
@@ -207,6 +254,47 @@ test.describe.serial("Mobile Requests tab", () => {
   });
 
   test("deletes the Requests tab", async () => {
+    await openMobileSettings(page);
+    const row = await findTabRow(page, TAB);
+    await row.getByRole("button", { name: "Edit" }).click();
+    await page.locator('input[name="text"]').waitFor({ state: "visible", timeout: 10000 });
+    await page.getByRole("button", { name: /Delete Tab/i }).click();
+    await confirmDelete(page);
+    await expect(page.getByRole("heading", { level: 3, name: TAB, exact: true })).toHaveCount(0, { timeout: 15000 });
+  });
+});
+
+// ChurchAppsSupport#1660: Songs opens the church's song library in the app.
+test.describe.serial("Mobile Songs tab", () => {
+  test.describe.configure({ retries: 0 });
+  let page: Page;
+  const TAB = "Zacchaeus Songs Tab";
+
+  test.beforeAll(async ({ browser }) => {
+    const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+    page = await context.newPage();
+    await login(page);
+  });
+
+  test.afterAll(async () => {
+    await page?.context().close();
+  });
+
+  test("creates a Songs tab and keeps its type", async () => {
+    await openMobileSettings(page);
+    await openAddTabDrawer(page);
+    await page.locator('input[name="text"]').fill(TAB);
+    await selectMuiByLabel(page, "Tab Type", "Songs");
+    await selectMuiByLabel(page, "Visibility", "Logged-in Users");
+    await page.getByRole("button", { name: /Save Tab/i }).click();
+    const row = await findTabRow(page, TAB);
+    await expect(row.getByText("songs", { exact: true })).toBeVisible();
+    await row.getByRole("button", { name: "Edit" }).click();
+    await expect(page.locator('input[name="text"]')).toHaveValue(TAB, { timeout: 10000 });
+    await expect(page.getByLabel("Tab Type")).toHaveText("Songs");
+  });
+
+  test("deletes the Songs tab", async () => {
     await openMobileSettings(page);
     const row = await findTabRow(page, TAB);
     await row.getByRole("button", { name: "Edit" }).click();
@@ -601,7 +689,7 @@ test.describe("B1 Mobile page saves", () => {
 
     test.afterAll(async () => {
       // Put the prompt and tiles back to the defaults so B1App dashboard specs see them.
-      const defaults: Record<string, string> = { mobileHideSignInPrompt: "false", mobileSignInPromptText: "", mobileTileLayout: "grid", mobileHomeAttendance: "false", mobileHomeForms: "false", mobileHomeNews: "false", mobileHomeNewsCategory: "" };
+      const defaults: Record<string, string> = { mobileHideSignInPrompt: "false", mobileSignInPromptText: "", mobileRequestEventText: "", mobileTileLayout: "grid", mobileHomeAttendance: "false", mobileHomeForms: "false", mobileHomeNews: "false", mobileHomeNewsCategory: "" };
       const all = (await (await ctx.get(`${API}/membership/settings`, auth)).json()) as any[];
       const rows = all.filter(s => s.keyName in defaults).map(s => ({ ...s, value: defaults[s.keyName] }));
       if (rows.length) await ctx.post(`${API}/membership/settings`, { ...auth, data: rows });
@@ -634,6 +722,21 @@ test.describe("B1 Mobile page saves", () => {
       await page.reload();
       await expect(page.getByLabel("Show sign-in prompt on the app home screen")).not.toBeChecked({ timeout: 15000 });
       await expect(page.getByLabel("Sign-in prompt text")).toHaveValue("Sign in to get conference alerts");
+    });
+
+    // ChurchAppsSupport#1588: the church's own instructions replace the Request an Event page's default line.
+    test("event request instructions save trimmed as a public setting that survives a reload", async ({ page }) => {
+      await page.goto("/mobile/b1-mobile");
+      await expect(page.getByRole("heading", { name: "Event request page" })).toBeVisible({ timeout: 15000 });
+      const text = page.getByLabel("Event request instructions");
+      await expect(text).toHaveAttribute("placeholder", "Staff will approve each room and item.");
+      await text.fill("  Requests need two weeks' notice.\nDonald Clark confirms every booking.  ");
+      await saveSettings(page);
+
+      const pub = await publicSettings();
+      expect(pub.mobileRequestEventText).toBe("Requests need two weeks' notice.\nDonald Clark confirms every booking.");
+      await page.reload();
+      await expect(page.getByLabel("Event request instructions")).toHaveValue("Requests need two weeks' notice.\nDonald Clark confirms every booking.", { timeout: 15000 });
     });
 
     test("home screen tiles default to Grid and List saves as a public setting that survives a reload", async ({ page }) => {
@@ -684,6 +787,14 @@ test.describe("B1 Mobile page saves", () => {
       expect((await publicSettings()).mobileTileLayout).toBe("autoscrolllist");
       await page.reload();
       await expect(page.getByRole("combobox", { name: "Layout" })).toHaveText("Scrolling (automatic) and list", { timeout: 15000 });
+    });
+
+    // ChurchAppsSupport#1573: the list beneath the moving row skips links already in the app's menu.
+    test("tile layout help says Scrolling (automatic) and list skips links already in the menu", async ({ page }) => {
+      await page.goto("/mobile/b1-mobile");
+      await expect(page.getByRole("combobox", { name: "Layout" })).toBeVisible({ timeout: 15000 });
+      await page.getByRole("heading", { name: "Home screen tiles" }).locator("xpath=..").getByText("help_outline", { exact: true }).hover();
+      await expect(page.getByRole("tooltip")).toContainText("the next three not already in the menu are listed beneath");
     });
 
     test("My Attendance and My Forms on Home start off and save as public settings that survive a reload", async ({ page }) => {

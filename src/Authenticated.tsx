@@ -7,7 +7,7 @@ import { PageSkeleton } from "./components/ui/PageSkeleton";
 import UserContext from "./UserContext";
 import { hasAllGroupsAccess, hasPlansEditAccess } from "./helpers";
 import { churchBrandColor } from "./helpers/Themes";
-import { HYMNS_ENABLED } from "./hymns/enabled";
+import { WorshipDayHelper } from "./helpers/WorshipDayHelper";
 import { useThemeMode } from "./ThemeContext";
 
 const PeoplePage = React.lazy(() => import("./people/PeoplePage").then((module) => ({ default: module.PeoplePage })));
@@ -62,7 +62,6 @@ const SermonsPage = React.lazy(() => import("./sermons/SermonsPage").then((modul
 const LiveStreamTimesPage = React.lazy(() => import("./sermons/LiveStreamTimesPage").then((module) => ({ default: module.LiveStreamTimesPage })));
 const StreamSettingsPage = React.lazy(() => import("./sermons/StreamSettingsPage").then((module) => ({ default: module.StreamSettingsPage })));
 const BulkImportPage = React.lazy(() => import("./sermons/BulkImportPage").then((module) => ({ default: module.BulkImportPage })));
-const HymnsPage = React.lazy(() => import("./hymns/HymnsPage").then((module) => ({ default: module.HymnsPage })));
 const CalendarsPage = React.lazy(() => import("./calendars/CalendarsPage").then((module) => ({ default: module.CalendarsPage })));
 const CalendarPage = React.lazy(() => import("./calendars/CalendarPage").then((module) => ({ default: module.CalendarPage })));
 const RoomsResourcesPage = React.lazy(() => import("./calendars/RoomsResourcesPage").then((module) => ({ default: module.RoomsResourcesPage })));
@@ -114,12 +113,13 @@ export const Authenticated: React.FC = () => {
     if (!churchId) return;
     let cancelled = false;
     ApiHelper.getAnonymous("/settings/public/" + churchId, "MembershipApi")
-      .then((settings: { region?: string; appTheme?: string; primaryColor?: string }) => {
+      .then((settings: { region?: string; worshipDay?: string; appTheme?: string; primaryColor?: string }) => {
         if (cancelled) return;
         DateHelper.setLocale(settings?.region);
+        WorshipDayHelper.set(settings?.worshipDay);
         setBrandColor(churchBrandColor(settings));
       })
-      .catch(() => { if (!cancelled) DateHelper.setLocale(null); })
+      .catch(() => { if (!cancelled) { DateHelper.setLocale(null); WorshipDayHelper.set(null); } })
       .finally(() => { if (!cancelled) setRegionChurchId(churchId); });
     return () => { cancelled = true; };
   }, [churchId]);
@@ -192,7 +192,6 @@ export const Authenticated: React.FC = () => {
           <Route path="/sermons/settings" element={<StreamSettingsPage />} />
           <Route path="/sermons/bulk" element={<BulkImportPage />} />
           <Route path="/sermons" element={<SermonsPage />} />
-          {HYMNS_ENABLED && <Route path="/hymns" element={<HymnsPage />} />}
           <Route path="/registrations/:eventId" element={<RegistrationDetailsPage />} />
           <Route path="/registrations" element={<RegistrationsPage />} />
           <Route path="/calendars/rooms" element={<RoomsResourcesPage />} />

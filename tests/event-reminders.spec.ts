@@ -147,6 +147,33 @@ test.describe.serial("Event reminders editor", () => {
     await expect(preview).toContainText("will be reminded", { timeout: 15000 });
   });
 
+  // ChurchAppsSupport#1584: Send now beside Save sends the saved reminder to its recipients right away.
+  test("sends the saved reminder now to the event's recipients", async () => {
+    await openRegistrationDetails(page, eventId);
+    const sendNow = page.locator('[data-testid="reminder-send-now-button"]');
+    await expect(sendNow).toBeEnabled({ timeout: 15000 });
+    const sent = page.waitForResponse((r) => r.url().includes(`/messaging/reminders/event/${eventId}/sendNow`) && r.ok(), { timeout: 15000 });
+    await sendNow.click();
+    const count = (await (await sent).json()).sent;
+    expect(count).toBeGreaterThan(0);
+    await expect(page.locator('[data-testid="reminder-sent-now"]')).toHaveText(`Sent to ${count} people`);
+  });
+
+  // B1Admin#899: turning the reminder off after Send now cleared nothing because the toggle called an undefined setSentCount.
+  test("turning the reminder off after Send now clears the sent line", async () => {
+    const line = page.locator('[data-testid="reminder-sent-now"]');
+    await expect(line).toHaveText(/^Sent to \d+ people$/);
+    const errors: string[] = [];
+    const onError = (err: Error) => errors.push(err.message);
+    page.on("pageerror", onError);
+    const toggle = page.locator('[data-testid="reminder-enabled-toggle"]');
+    await toggle.click();
+    await expect(toggle).not.toBeChecked();
+    page.off("pageerror", onError);
+    expect(errors.filter((m) => m.includes("setSentCount"))).toEqual([]);
+    await expect(line).not.toBeVisible();
+  });
+
   test("edits and upserts the reminder (POST), then disables it (DELETE)", async () => {
     await openRegistrationDetails(page, eventId);
 

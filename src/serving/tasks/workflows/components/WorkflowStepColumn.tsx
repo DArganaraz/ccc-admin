@@ -21,6 +21,8 @@ interface Props {
   workflows?: WorkflowInterface[];
   canEdit: boolean;
   canManage: boolean;
+  // Assignment-confirmation workflows only get cards from a published plan.
+  assignmentConfirmation?: boolean;
   selectedIds: Set<string>;
   onToggleSelect: (cardId: string) => void;
   onSelectAll: (cardIds: string[], selected: boolean) => void;
@@ -139,7 +141,7 @@ export const WorkflowStepColumn = (props: Props) => {
         </Box>
       )}
 
-      <DroppableWrapper accept="workflowCard" onDrop={(d: any) => props.onDropCard(d.data.id, step.id || "")}>
+      <DroppableWrapper accept="workflowCard" onDrop={(d: { data: TaskInterface & { id: string } }) => props.onDropCard(d.data.id, step.id || "")}>
         <Box sx={{ minHeight: 60 }}>
           {cards.map((card) => (
             <DraggableWrapper key={card.id} dndType="workflowCard" data={card} onDoubleClick={() => props.onOpenCard(card)}>
@@ -155,7 +157,7 @@ export const WorkflowStepColumn = (props: Props) => {
         </Box>
       </DroppableWrapper>
 
-      {props.canEdit && (
+      {props.canEdit && !props.assignmentConfirmation && (
         <Button
           fullWidth
           size="small"
@@ -168,7 +170,7 @@ export const WorkflowStepColumn = (props: Props) => {
         </Button>
       )}
 
-      {showPicker && <ContentPicker onClose={() => setShowPicker(false)} onSelect={handleAddCard} />}
+      {showPicker && !props.assignmentConfirmation && <ContentPicker onClose={() => setShowPicker(false)} onSelect={handleAddCard} allowCreatePerson />}
     </Box>
   );
 };

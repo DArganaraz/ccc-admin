@@ -4,18 +4,20 @@ import { AppearanceHelper } from "@churchapps/apphelper";
 import { YoutubeBackground } from "@churchapps/apphelper/website";
 import "../admin/elements/SafeRawHTMLElement";
 import { StyleHelper, Element } from "../apphelperWebsite";
+import type { ChurchInterface } from "@churchapps/helpers";
 import type { SectionInterface, GlobalStyleInterface, ElementInterface } from "../../helpers/Interfaces";
+import type { ChurchSettings } from "../types";
 
 interface Props {
-  church: any;
-  appearance: any;
+  church: ChurchInterface;
+  appearance: ChurchSettings;
   globalStyles?: GlobalStyleInterface;
   footerSections?: SectionInterface[];
 }
 
 interface ElementRendererProps {
   element: ElementInterface;
-  churchSettings: any;
+  churchSettings: ChurchSettings;
   textColor: string;
 }
 
@@ -26,7 +28,7 @@ const ElementRenderer: React.FC<ElementRendererProps> = ({ element, churchSettin
 interface SectionProps {
   section: SectionInterface;
   first?: boolean;
-  churchSettings: any;
+  churchSettings: ChurchSettings;
   globalStyles: GlobalStyleInterface;
 }
 
@@ -84,7 +86,7 @@ const SectionRenderer: React.FC<SectionProps> = ({ section, first, churchSetting
   };
 
   const getSectionAnchor = () => {
-    if (section.answers?.sectionId) return <a id={section.answers?.sectionId} className="sectionAnchor"></a>;
+    if (section.answers?.sectionId) return <a id={section.answers?.sectionId as string} className="sectionAnchor"></a>;
     else return <></>;
   };
 

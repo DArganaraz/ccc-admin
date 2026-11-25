@@ -12,6 +12,7 @@ import {
   Phone as PhoneIcon,
   Home as AddressIcon,
   Cake as BirthdayIcon,
+  Favorite as AnniversaryIcon,
   FamilyRestroom as FamilyIcon
 } from "@mui/icons-material";
 
@@ -19,7 +20,7 @@ interface Props {
   task: TaskInterface;
 }
 
-interface FamilyMemberRequest { first?: string; last?: string; prefix?: string; mobilePhone?: string; householdRole?: string }
+interface FamilyMemberRequest { first?: string; last?: string; prefix?: string; mobilePhone?: string; email?: string; photo?: string; householdRole?: string }
 
 // Older requests carry just the first name; newer ones a JSON object with the other fields.
 const parseFamilyMember = (value: string): FamilyMemberRequest => {
@@ -32,7 +33,7 @@ const parseFamilyMember = (value: string): FamilyMemberRequest => {
 
 const describeFamilyMember = (m: FamilyMemberRequest) => {
   const name = [m.prefix, m.first, m.last].filter(Boolean).join(" ");
-  return [name, m.householdRole, m.mobilePhone].filter(Boolean).join(" · ");
+  return [name, m.householdRole, m.mobilePhone, m.email].filter(Boolean).join(" · ");
 };
 
 export const RequestedChanges = (props: Props) => {
@@ -45,6 +46,8 @@ export const RequestedChanges = (props: Props) => {
     }
   }, [props.task?.data]);
   const [applying, setApplying] = React.useState(false);
+  // A household adult can request changes for a child, so the requester is not always the person being changed.
+  const submittedForSomeoneElse = props.task.createdByType === "person" && !!props.task.createdById && props.task.createdById !== props.task.associatedWithId;
   const navigate = useNavigate();
 
   const getFieldIcon = (field: string) => {
@@ -55,6 +58,7 @@ export const RequestedChanges = (props: Props) => {
       return <AddressIcon />;
     }
     if (field === "birthDate") return <BirthdayIcon />;
+    if (field === "anniversary") return <AnniversaryIcon />;
     if (field === "familyMember") return <FamilyIcon />;
     return <ChangesIcon />;
   };
@@ -62,8 +66,10 @@ export const RequestedChanges = (props: Props) => {
   const getRows = () => {
     const rows: JSX.Element[] = [];
     requestedChanges?.forEach((ch, i) => {
-      let val: any = ch.value;
-      if (ch.field === "photo") {
+      let val: React.ReactNode = ch.value;
+      if (ch.field === "photo" && !ch.value) {
+        val = <Typography variant="body2" data-testid="requested-change-remove-photo">{Locale.label("tasks.requestedChanges.removePhoto")}</Typography>;
+      } else if (ch.field === "photo") {
         val = (
           <Avatar
             src={ch.value}
@@ -71,7 +77,15 @@ export const RequestedChanges = (props: Props) => {
             alt={Locale.label("tasks.requestedChanges.newProfile")}
           />
         );
-      } else if (ch.field === "familyMember") val = describeFamilyMember(parseFamilyMember(ch.value));
+      } else if (ch.field === "familyMember") {
+        const m = parseFamilyMember(ch.value);
+        val = (
+          <Stack direction="row" alignItems="center" spacing={1} component="span">
+            {m.photo && <Avatar src={m.photo} sx={{ width: 48, height: 48 }} alt={Locale.label("tasks.requestedChanges.newProfile")} data-testid="family-member-photo" />}
+            <span>{describeFamilyMember(m)}</span>
+          </Stack>
+        );
+      }
       rows.push(
         <TableRow key={i}>
           <TableCell>
@@ -117,12 +131,15 @@ export const RequestedChanges = (props: Props) => {
         case "name.last": p.name.last = value; break;
         case "name.prefix": p.name.prefix = value; break;
         case "photo": {
+          // An empty value is a request to take the photo down.
+          if (!value) { p.photo = ""; p.photoUpdated = undefined; break; }
           p.photo = value;
           const getTime = value.split("?dt=")[1];
           p.photoUpdated = new Date(+getTime);
           break;
         }
         case "birthDate": p.birthDate = value; break;
+        case "anniversary": p.anniversary = value; break;
         case "contactInfo.email": p.contactInfo.email = value; break;
         case "contactInfo.address1": p.contactInfo.address1 = value; break;
         case "contactInfo.address2": p.contactInfo.address2 = value; break;
@@ -137,10 +154,12 @@ export const RequestedChanges = (props: Props) => {
           const last = m.last || p.name.last;
           const newPerson: PersonInterface = {
             name: { first: m.first, last, prefix: m.prefix || undefined, display: [m.first, last].join(" ") },
-            contactInfo: m.mobilePhone ? { mobilePhone: m.mobilePhone } : {},
+            contactInfo: { ...(m.mobilePhone ? { mobilePhone: m.mobilePhone } : {}), ...(m.email ? { email: m.email } : {}) },
             householdId: p.householdId,
             householdRole: m.householdRole || "Other"
           };
+          // The pending photo's URL; the Api moves the file onto the new person when it is saved.
+          if (m.photo) newPerson.photo = m.photo;
           peopleArray.push(newPerson);
           break;
         }
@@ -172,6 +191,14 @@ export const RequestedChanges = (props: Props) => {
             </Button>
           )}
         </Stack>
+
+        {submittedForSomeoneElse && (
+          <Typography variant="body2" color="text.secondary" data-testid="requested-changes-submitted-by">
+            {Locale.label("tasks.requestedChanges.submittedByFor", "Submitted by {requester} for {person}")
+              .replace("{requester}", props.task.createdByLabel || "")
+              .replace("{person}", props.task.associatedWithLabel || "")}
+          </Typography>
+        )}
 
         <Box sx={tableScrollSx} role="region" aria-label={Locale.label("tasks.requestedChanges.requestedChanges")} tabIndex={0}>
           <Table>

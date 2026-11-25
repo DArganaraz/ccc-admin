@@ -21,6 +21,7 @@ import {
 import { ExpandMore } from "@mui/icons-material";
 import { ApiHelper, Locale, DateHelper } from "@churchapps/apphelper";
 import { useTextingEnabled } from "../../hooks";
+import { sentNowText, type SendNowResult } from "../../helpers/ReminderSendNowHelper";
 import type { SelectChangeEvent } from "@mui/material/Select";
 
 export interface ReminderDefinition {
@@ -90,6 +91,9 @@ export const EventReminderEdit = forwardRef<EventReminderEditRef, Props>(
     const [preview, setPreview] = useState<ReminderPreview | null>(null);
     const [previewLoading, setPreviewLoading] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [sending, setSending] = useState(false);
+    const [sentResult, setSentResult] = useState<SendNowResult | null>(null);
+    const [sendFailed, setSendFailed] = useState(false);
 
     useEffect(() => {
       if (!eventId) return;
@@ -155,6 +159,21 @@ export const EventReminderEdit = forwardRef<EventReminderEditRef, Props>(
       try { await doSave(eventId); } finally { setSaving(false); }
     };
 
+    const handleSendNow = async () => {
+      if (!eventId) return;
+      setSentResult(null);
+      setSendFailed(false);
+      setSending(true);
+      try {
+        const result: SendNowResult = await ApiHelper.post("/reminders/event/" + eventId + "/sendNow", {}, "MessagingApi");
+        setSentResult(result || {});
+      } catch {
+        setSendFailed(true);
+      } finally {
+        setSending(false);
+      }
+    };
+
     const toggleOffset = (minutes: number) => {
       setSelectedOffsets((prev) => {
         if (prev.includes(minutes)) return prev.filter((m) => m !== minutes);
@@ -189,7 +208,7 @@ export const EventReminderEdit = forwardRef<EventReminderEditRef, Props>(
         <AccordionDetails>
           <Stack spacing={2}>
             <FormControlLabel
-              control={<Switch checked={enabled} onChange={(e) => setEnabled(e.target.checked)} data-testid="reminder-enabled-toggle" />}
+              control={<Switch checked={enabled} onChange={(e) => { setEnabled(e.target.checked); setSentResult(null); }} data-testid="reminder-enabled-toggle" />}
               label={Locale.label("calendars.eventReminders.enableReminders")}
             />
 
@@ -289,7 +308,7 @@ export const EventReminderEdit = forwardRef<EventReminderEditRef, Props>(
             )}
 
             {eventId && (
-              <Box>
+              <Stack direction="row" spacing={1} alignItems="center">
                 <Button
                   variant="contained"
                   size="small"
@@ -299,7 +318,22 @@ export const EventReminderEdit = forwardRef<EventReminderEditRef, Props>(
                 >
                   {saving ? Locale.label("common.saving") : Locale.label("common.save")}
                 </Button>
-              </Box>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={handleSendNow}
+                  disabled={sending || saving || !defId || !enabled}
+                  data-testid="reminder-send-now-button"
+                >
+                  {sending ? Locale.label("common.saving") : Locale.label("calendars.eventReminders.sendNow")}
+                </Button>
+                {sentResult && (
+                  <Typography variant="body2" color="success.main" data-testid="reminder-sent-now">
+                    {sentNowText(sentResult, channels.includes("sms"), (k) => Locale.label("calendars.eventReminders." + k))}
+                  </Typography>
+                )}
+                {sendFailed && <Typography variant="body2" color="error">{Locale.label("common.saveError")}</Typography>}
+              </Stack>
             )}
           </Stack>
         </AccordionDetails>

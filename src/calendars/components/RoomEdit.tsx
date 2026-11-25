@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import { ApiHelper, Locale } from "@churchapps/apphelper";
 import { type GroupInterface } from "@churchapps/helpers";
-import { TextField, MenuItem } from "@mui/material";
+import { FormControlLabel, MenuItem, Switch, TextField, Typography } from "@mui/material";
+import { ComboBox } from "../../components";
 import { FormCard } from "../../components/ui";
 import { useConfirmDelete } from "../../hooks";
 import { type RoomInterface } from "../interfaces";
@@ -9,6 +10,7 @@ import { type RoomInterface } from "../interfaces";
 type Props = {
   room: RoomInterface;
   groups: GroupInterface[];
+  categories: string[];
   updatedCallback: () => void;
 };
 
@@ -21,7 +23,7 @@ export function RoomEdit(props: Props) {
 
   const handleSave = () => {
     setSaving(true);
-    ApiHelper.post("/rooms", [room], "ContentApi").then(() => {
+    ApiHelper.post("/rooms", [{ ...room, categoryName: room.categoryName?.trim() || undefined }], "ContentApi").then(() => {
       setSaving(false);
       props.updatedCallback();
     }).catch(() => setSaving(false));
@@ -70,6 +72,14 @@ export function RoomEdit(props: Props) {
           onChange={(e) => setRoom({ ...room, description: e.target.value })}
           data-testid="room-description-input"
         />
+        <ComboBox
+          label={Locale.label("calendars.rooms.category")}
+          placeholder={Locale.label("calendars.rooms.categoryPlaceholder")}
+          options={props.categories}
+          value={room.categoryName || ""}
+          onChange={(value) => setRoom({ ...room, categoryName: value })}
+          testId="room-category"
+        />
         <TextField
           fullWidth
           select
@@ -82,6 +92,11 @@ export function RoomEdit(props: Props) {
           <MenuItem value="">{Locale.label("calendars.rooms.noApprovalNeeded")}</MenuItem>
           {props.groups.map((g) => <MenuItem key={g.id} value={g.id}>{g.name}</MenuItem>)}
         </TextField>
+        <FormControlLabel
+          control={<Switch checked={room.active ?? true} onChange={(e) => setRoom({ ...room, active: e.target.checked })} color="primary" />}
+          label={<Typography variant="body1">{room.active ?? true ? Locale.label("calendars.rooms.active") : Locale.label("calendars.rooms.inactive")}</Typography>}
+          data-testid="room-active-toggle"
+        />
       </FormCard>
     </>
   );

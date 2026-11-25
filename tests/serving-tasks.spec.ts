@@ -1,5 +1,6 @@
+import { request } from "@playwright/test";
 import { loggedInTest as test, expect } from "./helpers/test-fixtures";
-import { personAddButton } from "./helpers/fixtures";
+import { confirmDelete, personAddButton } from "./helpers/fixtures";
 
 // Issue #1259: workflow "Send email" bell notifications were saved as tasks pointing at the
 // email template id, so clicking one opened /serving/tasks/<templateId> and the page crashed.
@@ -38,6 +39,7 @@ test("a task can be created with no person or group", async ({ page }) => {
   await page.locator('[name="personAddText"]').fill("Demo User");
   await page.locator('[data-testid="search-button"]').click();
   await personAddButton(page, "Demo User").click();
+  await page.locator('[data-testid="content-picker-done"]').click();
 
   await page.locator('[name="title"]').fill("Order more coffee");
   await page.locator("button").getByText("Save").click();
@@ -55,4 +57,315 @@ test("a task's person or group can be cleared", async ({ page }) => {
   await expect(label).toHaveText("Not specified", { timeout: 15000 });
   await page.reload();
   await expect(label).toHaveText("Not specified", { timeout: 15000 });
+});
+
+// Issue #1562: reassigning a task from the task page saved silently, so the new assignee was never told.
+test("reassigning a task notifies the new assignee", async ({ page }) => {
+  await page.goto("/serving/tasks/TSK00000001");
+  await page.locator('[data-testid="task-assign"]').click();
+  await page.locator('[name="personAddText"]').fill("Donald Clark");
+  await page.locator('[data-testid="search-button"]').click();
+  const notification = page.waitForRequest((req) => req.method() === "POST" && req.url().includes("/notifications/create"), { timeout: 15000 });
+  await personAddButton(page, "Donald Clark").click();
+  const body = (await notification).postDataJSON();
+  expect(body.peopleIds).toEqual(["PER00000080"]);
+  expect(body.contentType).toBe("task");
+  expect(body.contentId).toBe("TSK00000001");
+  await expect(page.locator('[data-testid="task-assigned-label"]')).toHaveText("Donald Clark", { timeout: 15000 });
+});
+
+// ChurchAppsSupport#1574: the task page shows the phone and email of the person the task is about,
+// and the person picker shows results as you type.
+test("a task about a person shows their phone and email", async ({ page }) => {
+  await page.goto("/serving/tasks/TSK00000104");
+  const identity = page.locator('[data-testid="task-identity"]');
+  await expect(identity.locator('[data-testid="card-contact-phone"]')).toHaveAttribute("href", "tel:(217) 555-0106", { timeout: 15000 });
+  await expect(identity.locator('[data-testid="card-contact-email"]')).toHaveAttribute("href", "mailto:sarah.smith@email.com");
+});
+
+test("the task person picker searches as you type", async ({ page }) => {
+  await page.goto("/serving/tasks");
+  await page.locator('[data-testid="add-task-button"]').click();
+  await page.locator('[data-testid="assign-to-input"]').click();
+  await page.locator('[name="personAddText"]').fill("Donald");
+  // Without a typed search the list keeps showing recent people, so only Donalds means it searched.
+  await expect(personAddButton(page, "Donald Clark")).toBeVisible({ timeout: 15000 });
+  await expect(page.locator("#householdMemberAddTable tr").filter({ hasNotText: "Donald" })).toHaveCount(0);
+});
+
+test("the task group picker filters as you type with no Search button", async ({ page }) => {
+  await page.goto("/serving/tasks/TSK00000001");
+  await page.locator('[data-testid="task-associate"]').click();
+  await page.getByRole("tab", { name: "Group" }).click();
+  const field = page.locator('[name="groupSearchText"]');
+  await expect(field).toBeVisible({ timeout: 15000 });
+  await field.fill("Youth");
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Search" })).toHaveCount(0);
+  await expect(page.getByRole("dialog").getByText(/Youth/).first()).toBeVisible();
+});
+
+// ChurchAppsSupport#1577: the task page shows the exact creation time, keeps a history of reassignments,
+// and lets people with Edit All Cards & Tasks rename or delete any task.
+const TASKS_API = (process.env.API_BASE || "http://localhost:8084") + "/doing/tasks";
+
+async function createTask(title: string, status = "Open") {
+  const ctx = await request.newContext();
+  const login = await ctx.post(`${process.env.API_BASE || "http://localhost:8084"}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } });
+  const jwt = (await login.json()).userChurches?.find((uc: any) => uc.church?.id === "CHU00000001")?.jwt as string;
+  const res = await ctx.post(TASKS_API, {
+    headers: { Authorization: "Bearer " + jwt },
+    data: [{ title, status, dateClosed: status === "Closed" ? new Date() : undefined, createdByType: "person", createdById: "PER00000080", createdByLabel: "Donald Clark", assignedToType: "person", assignedToId: "PER00000080", assignedToLabel: "Donald Clark" }]
+  });
+  const id = (await res.json())[0].id as string;
+  await ctx.dispose();
+  return id;
+}
+
+test("a task shows its full creation date and time", async ({ page }) => {
+  const id = await createTask("Check the projector bulbs " + Date.now());
+  await page.goto("/serving/tasks/" + id);
+  const identity = page.locator('[data-testid="task-identity"]');
+  await expect(identity.getByText(/Created [A-Z][a-z]{2} \d{1,2}, \d{4},? \d{1,2}:\d{2}\s?[AP]M by Donald Clark/)).toBeVisible({ timeout: 15000 });
+});
+
+test("an admin can rename any task and the title sticks", async ({ page }) => {
+  const id = await createTask("Order new hymnals " + Date.now());
+  await page.goto("/serving/tasks/" + id);
+  await page.locator('[data-testid="task-edit-title"]').click({ timeout: 15000 });
+  const input = page.locator('[data-testid="task-title-input"] input');
+  const renamed = "Order new hymnals and bookmarks " + Date.now();
+  await input.fill(renamed);
+  await page.locator('[data-testid="task-title-save"]').click();
+  await expect(page.locator("#page-header-title")).toHaveText(renamed, { timeout: 15000 });
+  await page.reload();
+  await expect(page.locator("#page-header-title")).toHaveText(renamed, { timeout: 15000 });
+});
+
+test("reassigning a task adds a history line", async ({ page }) => {
+  const id = await createTask("Call the plumber " + Date.now());
+  await page.goto("/serving/tasks/" + id);
+  await page.locator('[data-testid="task-assign"]').click({ timeout: 15000 });
+  await page.locator('[name="personAddText"]').fill("Demo User");
+  await page.locator('[data-testid="search-button"]').click();
+  await personAddButton(page, "Demo User").click();
+  await expect(page.locator('[data-testid="task-assigned-label"]')).toHaveText("Demo User", { timeout: 15000 });
+  await expect(page.locator('[data-testid="task-history"]')).toContainText("Reassigned from Donald Clark to Demo User", { timeout: 15000 });
+});
+
+test("an admin can delete a closed task", async ({ page }) => {
+  const title = "Old closed task " + Date.now();
+  const id = await createTask(title, "Closed");
+  await page.goto("/serving/tasks/" + id);
+  await expect(page.locator('[data-testid="task-identity"]').getByText(/^Closed [A-Z][a-z]{2} \d{1,2}, \d{4}/)).toBeVisible({ timeout: 15000 });
+  await page.locator('[data-testid="task-delete"]').click();
+  await confirmDelete(page);
+  await expect(page).toHaveURL(/\/serving\/tasks$/, { timeout: 15000 });
+  await page.goto("/serving/tasks/" + id);
+  await expect(page.getByText("Task not found")).toBeVisible({ timeout: 15000 });
+});
+
+// ChurchAppsSupport#1584: a Send now button beside Save Reminders sends the saved task reminder right away.
+test("a task reminder can be sent now to the assignee", async ({ page }) => {
+  await page.goto("/serving/tasks/TSK00000003");
+  await page.locator('[data-testid="task-assign"]').click();
+  await page.locator('[name="personAddText"]').fill("Donald Clark");
+  await page.locator('[data-testid="search-button"]').click();
+  await personAddButton(page, "Donald Clark").click();
+  await expect(page.locator('[data-testid="task-assigned-label"]')).toHaveText("Donald Clark", { timeout: 15000 });
+
+  await page.locator('[data-testid="task-reminders-toggle"]').click();
+  const toggle = page.locator('[data-testid="task-reminder-enabled-toggle"] input');
+  if (!(await toggle.isChecked())) await toggle.check();
+  const sendNow = page.locator('[data-testid="task-reminder-send-now-button"]');
+  const saved = page.waitForResponse((r) => /\/messaging\/reminders\/task\/TSK00000003$/.test(r.url()) && r.request().method() === "POST" && r.ok(), { timeout: 15000 });
+  await page.locator('[data-testid="task-reminder-save-button"]').click();
+  await saved;
+  await expect(sendNow).toBeEnabled({ timeout: 15000 });
+
+  const sent = page.waitForResponse((r) => r.url().includes("/messaging/reminders/task/TSK00000003/sendNow") && r.ok(), { timeout: 15000 });
+  await sendNow.click();
+  expect((await (await sent).json()).sent).toBe(1);
+  await expect(page.locator('[data-testid="task-reminder-sent-now"]')).toHaveText("Sent to 1 people");
+});
+
+// B1Admin#899: turning the reminder off after Send now cleared nothing because the toggle called an undefined setSentCount.
+test("turning the task reminder off after Send now clears the sent line", async ({ page }) => {
+  await page.goto("/serving/tasks/TSK00000003");
+  await page.locator('[data-testid="task-assign"]').click();
+  await page.locator('[name="personAddText"]').fill("Donald Clark");
+  await page.locator('[data-testid="search-button"]').click();
+  await personAddButton(page, "Donald Clark").click();
+  await expect(page.locator('[data-testid="task-assigned-label"]')).toHaveText("Donald Clark", { timeout: 15000 });
+
+  await page.locator('[data-testid="task-reminders-toggle"]').click();
+  const toggle = page.locator('[data-testid="task-reminder-enabled-toggle"] input');
+  if (!(await toggle.isChecked())) await toggle.check();
+  const sendNow = page.locator('[data-testid="task-reminder-send-now-button"]');
+  const saved = page.waitForResponse((r) => /\/messaging\/reminders\/task\/TSK00000003$/.test(r.url()) && r.request().method() === "POST" && r.ok(), { timeout: 15000 });
+  await page.locator('[data-testid="task-reminder-save-button"]').click();
+  await saved;
+  await expect(sendNow).toBeEnabled({ timeout: 15000 });
+
+  const sent = page.waitForResponse((r) => r.url().includes("/messaging/reminders/task/TSK00000003/sendNow") && r.ok(), { timeout: 15000 });
+  await sendNow.click();
+  await sent;
+  const line = page.locator('[data-testid="task-reminder-sent-now"]');
+  await expect(line).toHaveText("Sent to 1 people");
+
+  const errors: string[] = [];
+  page.on("pageerror", (err) => errors.push(err.message));
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  expect(errors.filter((m) => m.includes("setSentCount"))).toEqual([]);
+  await expect(line).not.toBeVisible();
+});
+
+// ChurchAppsSupport#1600: with Text checked, Send now says how many texts went out and how many were skipped.
+// Donald Clark never turned Text messages on, so his text is skipped.
+test("Send now with Text reports texts sent and skipped", async ({ page }) => {
+  await page.goto("/serving/tasks/TSK00000003");
+  await page.locator('[data-testid="task-assign"]').click();
+  await page.locator('[name="personAddText"]').fill("Donald Clark");
+  await page.locator('[data-testid="search-button"]').click();
+  await personAddButton(page, "Donald Clark").click();
+  await expect(page.locator('[data-testid="task-assigned-label"]')).toHaveText("Donald Clark", { timeout: 15000 });
+  await page.locator('[data-testid="task-reminders-toggle"]').click();
+  const toggle = page.locator('[data-testid="task-reminder-enabled-toggle"] input');
+  if (!(await toggle.isChecked())) await toggle.check();
+  const sms = page.locator('[data-testid="task-reminder-channel-sms"] input');
+  if (!(await sms.isChecked())) await sms.check();
+  const saved = page.waitForResponse((r) => /\/messaging\/reminders\/task\/TSK00000003$/.test(r.url()) && r.request().method() === "POST" && r.ok(), { timeout: 15000 });
+  await page.locator('[data-testid="task-reminder-save-button"]').click();
+  await saved;
+  const sendNow = page.locator('[data-testid="task-reminder-send-now-button"]');
+  await expect(sendNow).toBeEnabled({ timeout: 15000 });
+
+  const sent = page.waitForResponse((r) => r.url().includes("/messaging/reminders/task/TSK00000003/sendNow") && r.ok(), { timeout: 15000 });
+  await sendNow.click();
+  expect((await (await sent).json()).sent).toBe(1);
+  const line = page.locator('[data-testid="task-reminder-sent-now"]');
+  await expect(line).toContainText("Sent to 1 people · 0 texted, 1 skipped");
+  await expect(line).toContainText("Text messages off");
+
+  // Put the reminder back to push and email so other runs start from the same place.
+  await sms.uncheck();
+  const restored = page.waitForResponse((r) => /\/messaging\/reminders\/task\/TSK00000003$/.test(r.url()) && r.request().method() === "POST" && r.ok(), { timeout: 15000 });
+  await page.locator('[data-testid="task-reminder-save-button"]').click();
+  await restored;
+});
+
+// ChurchAppsSupport#1563: New Task can hand the same to-do to several people at once, one task per person.
+test("New Task creates one task per picked person", async ({ page }) => {
+  const title = "Fill out the volunteer form " + Date.now();
+  await page.goto("/serving/tasks");
+  await page.locator('[data-testid="add-task-button"]').click();
+  await page.locator('[data-testid="assign-to-input"]').click();
+  await page.locator('[name="personAddText"]').fill("Donald Clark");
+  await page.locator('[data-testid="search-button"]').click();
+  await personAddButton(page, "Donald Clark").click();
+  await page.locator('[name="personAddText"]').fill("Demo User");
+  await page.locator('[data-testid="search-button"]').click();
+  await personAddButton(page, "Demo User").click();
+  const selected = page.locator('[data-testid="content-picker-selected"]');
+  await expect(selected).toContainText("Donald Clark", { timeout: 15000 });
+  await expect(selected).toContainText("Demo User");
+  await page.locator('[data-testid="content-picker-done"]').click();
+
+  await expect(page.locator('[data-testid="assign-per-person-hint"]')).toBeVisible();
+  await page.locator('[name="title"]').fill(title);
+  const posted = page.waitForRequest((req) => req.method() === "POST" && /\/doing\/tasks$/.test(req.url()), { timeout: 15000 });
+  await page.locator("button").getByText("Save").click();
+  const body = (await posted).postDataJSON();
+  expect(body.map((t: any) => t.assignedToLabel)).toEqual(["Donald Clark", "Demo User"]);
+  await page.locator('[data-testid="tasklist-tab-created"]').click();
+  await expect(page.locator('[data-testid="task-list"] tr', { hasText: title })).toHaveCount(2, { timeout: 15000 });
+});
+
+test("New Task can create a task for each member of a group", async ({ page }) => {
+  const title = "Turn in your background check " + Date.now();
+  await page.goto("/serving/tasks");
+  await page.locator('[data-testid="add-task-button"]').click();
+  await page.locator('[data-testid="assign-to-input"]').click();
+  await page.getByRole("tab", { name: "Group" }).click();
+  await page.locator('[data-testid="content-picker-per-member"] input').check();
+  await page.locator('[name="groupSearchText"]').fill("Greeters Ministry");
+  await page.getByRole("dialog").getByText("Greeters Ministry").click();
+
+  const chips = page.locator('[data-testid="assignee-chips"]');
+  for (const name of ["Kevin Martin", "Rachel Martin", "Brian Harris"]) await expect(chips).toContainText(name, { timeout: 15000 });
+  await page.locator('[name="title"]').fill(title);
+  const posted = page.waitForRequest((req) => req.method() === "POST" && /\/doing\/tasks$/.test(req.url()), { timeout: 15000 });
+  await page.locator("button").getByText("Save").click();
+  const body = (await posted).postDataJSON();
+  expect(body.map((t: any) => t.assignedToId).sort()).toEqual(["PER00000068", "PER00000069", "PER00000079"]);
+  expect(body.every((t: any) => t.assignedToType === "person" && t.title === title)).toBe(true);
+  await page.locator('[data-testid="tasklist-tab-created"]').click();
+  await expect(page.locator('[data-testid="task-list"] tr', { hasText: title })).toHaveCount(3, { timeout: 15000 });
+});
+
+// ChurchAppsSupport#1592: "Associate with" takes several people too; Save makes one task per assignee per associated person.
+test("New Task creates one task per associated person", async ({ page }) => {
+  const title = "Follow up with a visitor " + Date.now();
+  await page.goto("/serving/tasks");
+  await page.locator('[data-testid="add-task-button"]').click();
+  await page.locator('[data-testid="associate-with-input"] input').click();
+  for (const name of ["Donald Clark", "Demo User"]) {
+    await page.locator('[name="personAddText"]').fill(name);
+    await page.locator('[data-testid="search-button"]').click();
+    await personAddButton(page, name).click();
+  }
+  const selected = page.locator('[data-testid="content-picker-selected"]');
+  await expect(selected).toContainText("Donald Clark", { timeout: 15000 });
+  await expect(selected).toContainText("Demo User");
+  await page.locator('[data-testid="content-picker-done"]').click();
+
+  const chips = page.locator('[data-testid="associated-chips"]');
+  await expect(chips).toContainText("Donald Clark");
+  await expect(chips).toContainText("Demo User");
+  await expect(page.locator('[data-testid="associate-with-input"] input')).toHaveValue("2 people");
+
+  await page.locator('[data-testid="assign-to-input"]').click();
+  for (const name of ["Demo User", "Donald Clark"]) {
+    await page.locator('[name="personAddText"]').fill(name);
+    await page.locator('[data-testid="search-button"]').click();
+    await personAddButton(page, name).click();
+  }
+  await page.locator('[data-testid="content-picker-done"]').click();
+  await expect(page.locator('[data-testid="task-total-hint"]')).toHaveText("4 tasks will be created.");
+
+  await page.locator('[name="title"]').fill(title);
+  const posted = page.waitForRequest((req) => req.method() === "POST" && /\/doing\/tasks$/.test(req.url()), { timeout: 15000 });
+  await page.locator("button").getByText("Save").click();
+  const body = (await posted).postDataJSON();
+  expect(body.map((t: any) => t.assignedToLabel + " / " + t.associatedWithLabel).sort()).toEqual([
+    "Demo User / Demo User",
+    "Demo User / Donald Clark",
+    "Donald Clark / Demo User",
+    "Donald Clark / Donald Clark"
+  ]);
+  expect(body.every((t: any) => t.associatedWithType === "person" && t.title === title)).toBe(true);
+  await page.locator('[data-testid="tasklist-tab-created"]').click();
+  await expect(page.locator('[data-testid="task-list"] tr', { hasText: title })).toHaveCount(4, { timeout: 15000 });
+});
+
+// Issue #1649: reopening a closed task left its old "Closed" date on the page.
+test("a reopened task no longer shows a closed date", async ({ page }) => {
+  await page.goto("/serving/tasks/TSK00000002");
+  const status = page.locator('[data-testid="task-status"]');
+  const toggle = page.locator('[data-testid="task-status-toggle"]');
+  const closedOn = page.locator('[data-testid="task-closed-on"]');
+  await expect(status).toBeVisible({ timeout: 15000 });
+  if ((await status.textContent()) !== "Open") {
+    await toggle.click();
+    await expect(status).toHaveText("Open", { timeout: 15000 });
+  }
+  await toggle.click();
+  await expect(status).toHaveText("Closed", { timeout: 15000 });
+  await expect(closedOn).toBeVisible();
+
+  await toggle.click();
+  await expect(status).toHaveText("Open", { timeout: 15000 });
+  await page.reload();
+  await expect(status).toHaveText("Open", { timeout: 15000 });
+  await expect(closedOn).toHaveCount(0);
 });

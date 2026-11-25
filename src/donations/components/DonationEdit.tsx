@@ -7,31 +7,44 @@ import { ApiHelper, DateHelper, UniqueIdHelper, PersonHelper, Locale, Permission
 import { FormCard, LoadingButton, TextAction } from "../../components/ui";
 import { useConfirmDelete } from "../../hooks";
 import { FundDonations } from "@churchapps/apphelper/donations";
-import { type DonationInterface, type FundDonationInterface, type FundInterface, type PersonInterface } from "@churchapps/helpers";
+import { type DonationBatchInterface, type DonationInterface, type FundDonationInterface, type FundInterface, type PersonInterface } from "@churchapps/helpers";
 import { AppDatePicker } from "../../components";
+import { batchOptionLabel, batchOptions } from "./batchOptions";
 
 interface Props {
   donationId: string;
   batchId: string;
   // A new gift starts on the batch date, like the quick entry panel.
   batchDate?: string;
+  // Reports the date a new gift was saved with, so the next one starts on it.
+  onDateChange?: (date: string) => void;
   funds: FundInterface[];
   updatedFunction: () => void;
   currency?: string;
 }
 
-type AnyRecord = Record<string, any>;
+interface DonationFormValues {
+  date: string;
+  method: string;
+  methodDetails: string;
+  memo: string;
+  notes: string;
+}
+
+// The Api also returns the gateway transaction id for online gifts.
+type EditableDonation = DonationInterface & { transactionId?: string };
 
 export const DonationEdit = memo((props: Props) => {
   "use no memo"; // compiler caches register() results, breaking RHF field re-registration after reset()
-  const [donation, setDonation] = React.useState<DonationInterface>({});
+  const [donation, setDonation] = React.useState<EditableDonation>({});
   const [fundDonations, setFundDonations] = React.useState<FundDonationInterface[]>([]);
   const [showSelectPerson, setShowSelectPerson] = React.useState(false);
   const [refunding, setRefunding] = React.useState(false);
   const [refundError, setRefundError] = React.useState("");
   const [saveError, setSaveError] = React.useState("");
+  const [batches, setBatches] = React.useState<DonationBatchInterface[]>([]);
 
-  const { register, handleSubmit, reset, control, watch } = useForm<AnyRecord>({ defaultValues: { date: "", method: "Check", methodDetails: "", notes: "" } });
+  const { register, handleSubmit, reset, control, watch } = useForm<DonationFormValues>({ defaultValues: { date: "", method: "Check", methodDetails: "", memo: "", notes: "" } });
   const method = watch("method");
   const methodDetails = watch("methodDetails");
 
@@ -54,9 +67,9 @@ export const DonationEdit = memo((props: Props) => {
     try {
       await ApiHelper.post("/donate/refund/" + donation.id, {}, "GivingApi");
       props.updatedFunction();
-    } catch (e: any) {
+    } catch (e) {
       // ApiHelper rethrows the raw JSON body as the message, so dig the gateway error out of it.
-      let message = e?.message || "";
+      let message = e instanceof Error ? e.message : "";
       try { message = JSON.parse(message).error || message; } catch { /* not JSON */ }
       setRefundError(message || Locale.label("donations.donationEdit.refundFailed"));
     }
@@ -64,8 +77,7 @@ export const DonationEdit = memo((props: Props) => {
   }, [donation.id, props.updatedFunction, confirm]);
 
   const refundButton = useMemo(() => {
-    const d = donation as any;
-    if (!UserHelper.checkAccess(Permissions.givingApi.donations.edit) || d.status !== "complete" || !d.transactionId) return null;
+    if (!UserHelper.checkAccess(Permissions.givingApi.donations.edit) || donation.status !== "complete" || !donation.transactionId) return null;
     return (
       <LoadingButton color="warning" loading={refunding} onClick={handleRefund} data-testid="refund-donation">
         {Locale.label("donations.donationEdit.refund")}
@@ -85,7 +97,7 @@ export const DonationEdit = memo((props: Props) => {
 
   const getDeleteFunction = useCallback(() => (UniqueIdHelper.isMissing(props.donationId) ? undefined : handleDelete), [props.donationId, handleDelete]);
 
-  const onValid = async (values: AnyRecord) => {
+  const onValid = async (values: DonationFormValues) => {
     // donation.amount follows the fund rows (handleFundDonationsChange), so a gift with nothing in any fund is caught here.
     if (!((donation.amount || 0) > 0)) {
       setSaveError(Locale.label("donations.logGift.amountError", "Enter an amount greater than zero, such as 25.00."));
@@ -93,12 +105,13 @@ export const DonationEdit = memo((props: Props) => {
     }
     // New gifts are stamped with the church currency; edited gifts keep the currency they were entered in.
     const currency = (donation.currency || props.currency || "usd").toLowerCase();
-    const donationToSave: DonationInterface = {
+    const donationToSave: DonationInterface & { memo?: string } = {
       ...donation,
       currency,
       donationDate: values.date ? DateHelper.formatHtml5Date(values.date) : undefined,
       method: values.method,
       methodDetails: values.methodDetails,
+      memo: values.memo,
       notes: values.notes
     };
     setSaveError("");
@@ -110,6 +123,7 @@ export const DonationEdit = memo((props: Props) => {
       const id = data[0].id;
       setDonation((prev) => ({ ...prev, id }));
       if (isNew) {
+        if (donationToSave.donationDate) props.onDateChange?.(donationToSave.donationDate);
         props.updatedFunction();
         return;
       }
@@ -132,17 +146,18 @@ export const DonationEdit = memo((props: Props) => {
     if (UniqueIdHelper.isMissing(props.donationId)) {
       const initial = { donationDate: props.batchDate || DateHelper.formatHtml5Date(new Date()), batchId: props.batchId, amount: 0, method: "Check" };
       setDonation(initial);
-      reset({ date: initial.donationDate, method: "Check", methodDetails: "", notes: "" });
+      reset({ date: initial.donationDate, method: "Check", methodDetails: "", memo: "", notes: "" });
       const fd: FundDonationInterface = { amount: 0, fundId: props.funds[0]?.id };
       setFundDonations([fd]);
     } else {
-      ApiHelper.get("/donations/" + props.donationId, "GivingApi").then(async (data: DonationInterface) => {
+      ApiHelper.get("/donations/" + props.donationId, "GivingApi").then(async (data: EditableDonation) => {
         if (!UniqueIdHelper.isMissing(data.personId)) data.person = await ApiHelper.get("/people/" + data.personId!.toString(), "MembershipApi");
         if (data.donationDate) data.donationDate = DateHelper.formatHtml5Date(data.donationDate);
         setDonation(data);
-        reset({ date: (data.donationDate as string) || "", method: data.method || "Check", methodDetails: data.methodDetails || "", notes: data.notes || "" });
+        reset({ date: (data.donationDate as string) || "", method: data.method || "Check", methodDetails: data.methodDetails || "", memo: data.memo || "", notes: data.notes || "" });
       });
-      ApiHelper.get("/funddonations?donationId=" + props.donationId, "GivingApi").then((data: any) => setFundDonations(data));
+      ApiHelper.get("/funddonations?donationId=" + props.donationId, "GivingApi").then((data: FundDonationInterface[]) => setFundDonations(data));
+      ApiHelper.get("/donationbatches", "GivingApi").then((data: DonationBatchInterface[]) => setBatches(data || [])).catch(() => setBatches([]));
     }
   }, [props.donationId, props.batchId, props.batchDate, props.funds, reset]);
 
@@ -152,6 +167,26 @@ export const DonationEdit = memo((props: Props) => {
     const placeholder = method === "Check" ? Locale.label("placeholders.donation.checkNumber") : method === "In-Kind" ? Locale.label("placeholders.donation.item") : Locale.label("placeholders.donation.lastDigits");
     return <TextField fullWidth label={label} InputLabelProps={{ shrink: !!methodDetails }} placeholder={placeholder} {...register("methodDetails")} />;
   }, [method, methodDetails, register]);
+
+  // Moving a gift to another batch is an edit, so it fires no Donation workflow trigger the way re-entering it would.
+  const batchField = useMemo(() => {
+    if (UniqueIdHelper.isMissing(props.donationId)) return null;
+    return (
+      <Grid size={{ xs: 12 }}>
+        <FormControl fullWidth>
+          <InputLabel id="batch">{Locale.label("donations.donationEdit.batch")}</InputLabel>
+          <Select labelId="batch" label={Locale.label("donations.donationEdit.batch")} data-testid="donation-batch-select" value={batches.length > 0 ? donation.batchId || "" : ""} onChange={(e) => setDonation({ ...donation, batchId: e.target.value as string })}>
+            {batchOptions(batches, donation.batchId).map((b) => (
+              <MenuItem key={b.id} value={b.id}>{batchOptionLabel(b, (d) => DateHelper.prettyDate(d))}</MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+      </Grid>
+    );
+  }, [props.donationId, batches, donation]);
+
+  // Offer "Add New Person" only to staff who may create people.
+  const canCreatePerson = UserHelper.checkAccess(Permissions.membershipApi.people.edit);
 
   const handlePersonAdd = useCallback((p: PersonInterface | null) => {
     const d = { ...donation } as DonationInterface;
@@ -174,7 +209,7 @@ export const DonationEdit = memo((props: Props) => {
     if (showSelectPerson) {
       return (
         <>
-          <PersonAdd getPhotoUrl={PersonHelper.getPhotoUrl} addFunction={handlePersonAdd} />
+          <PersonAdd getPhotoUrl={PersonHelper.getPhotoUrl} addFunction={handlePersonAdd} onCreate={canCreatePerson ? handlePersonAdd : undefined} showCreatePersonOnNotFound={canCreatePerson} />
           <hr />
           <button type="button" className="text-decoration" onClick={handleAnonymousSelect} style={{ background: "none", border: 0, padding: 0, color: "var(--link)", cursor: "pointer" }}>
             {Locale.label("donations.donationEdit.anon")}
@@ -227,10 +262,12 @@ export const DonationEdit = memo((props: Props) => {
               )}
             />
           </Grid>
+          {batchField}
         </Grid>
         {methodDetailsField}
         <FundDonations fundDonations={fundDonations} funds={props.funds} updatedFunction={handleFundDonationsChange} currency={props?.currency} />
-        <TextField fullWidth label={Locale.label("common.notes")} data-cy="note" multiline placeholder={Locale.label("placeholders.donation.notes")} data-testid="donation-notes-input" aria-label={Locale.label("donations.donationEdit.ariaNotes")} {...register("notes")} />
+        <TextField fullWidth label={Locale.label("donations.donationEdit.memo")} data-testid="donation-memo-input" {...register("memo")} />
+        <TextField fullWidth label={Locale.label("donations.donationEdit.notesInternal")} data-cy="note" multiline placeholder={Locale.label("placeholders.donation.notes")} data-testid="donation-notes-input" aria-label={Locale.label("donations.donationEdit.ariaNotes")} {...register("notes")} />
       </FormCard>
     </>
   );

@@ -1,3 +1,5 @@
+import type { EventInterface } from "@churchapps/helpers";
+
 export interface RoomInterface {
   id?: string;
   churchId?: string;
@@ -5,6 +7,8 @@ export interface RoomInterface {
   description?: string;
   capacity?: number;
   approvalGroupId?: string | null;
+  active?: boolean;
+  categoryName?: string | null;
 }
 
 export interface ResourceInterface {
@@ -14,6 +18,8 @@ export interface ResourceInterface {
   description?: string;
   quantity?: number;
   approvalGroupId?: string | null;
+  active?: boolean;
+  categoryName?: string | null;
 }
 
 export interface EventBookingInterface {
@@ -40,6 +46,14 @@ export interface EventBookingInterface {
   eventRecurrenceRule?: string;
   conflicts?: ConflictInterface[];
 }
+
+// An event awaiting (or past) approval, as returned by /events/pending and /events/resolved.
+export type ApprovalEventInterface = EventInterface & {
+  requestedBy?: string;
+  resolvedBy?: string;
+  resolvedDate?: Date | string;
+  approvalStatus?: string;
+};
 
 export interface CalendarBlockoutInterface {
   id?: string;

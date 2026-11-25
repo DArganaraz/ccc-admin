@@ -11,7 +11,6 @@ import { HeaderPrimaryButton } from "../components/ui";
 
 const ICON_FOR_LINK_TYPE: Record<string, string> = {
   bible: "menu_book",
-  hymns: "music_note",
   votd: "format_quote",
   sermons: "play_circle",
   stream: "live_tv",
@@ -29,7 +28,7 @@ const ICON_FOR_LINK_TYPE: Record<string, string> = {
 };
 
 const buildNewTab = (linkType = "url", linkData = ""): LinkInterface => {
-  const tab: LinkInterface = {
+  const tab: LinkInterface & { visibility?: string } = {
     churchId: UserHelper.currentUserChurch.church.id,
     sort: 0,
     text: "",
@@ -39,7 +38,7 @@ const buildNewTab = (linkType = "url", linkData = ""): LinkInterface => {
     linkType,
     category: "b1Tab"
   };
-  (tab as any).visibility = "everyone";
+  tab.visibility = "everyone";
   return tab;
 };
 

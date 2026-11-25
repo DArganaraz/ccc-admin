@@ -376,9 +376,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@churchapps/apphelper@npm:^1.11.3":
-  version: 1.11.3
-  resolution: "@churchapps/apphelper@npm:1.11.3"
+"@churchapps/apphelper@npm:^1.14.0":
+  version: 1.14.0
+  resolution: "@churchapps/apphelper@npm:1.14.0"
   dependencies:
     "@emotion/cache": "npm:^11.14.0"
     "@emotion/react": "npm:^11.14.0"
@@ -440,20 +440,20 @@ __metadata:
       optional: true
     react-google-recaptcha:
       optional: true
-  checksum: 10c0/4ec0b0cad52cc91614de1c821e28e2516751950a22c2faeeeaef7edfc7932a2519fc79dc38aa118d7e3feb23f2ab60f2bbb43fc94bba8f4842bfbd33cc267a00
+  checksum: 10c0/b0be3e99cbf9189d4869729fd899231e1f5c34a7018ddf9f415263427ccc634ca7cdf61d0dff3b29908f7494b5ac9419c421c94c7b2d15f06755d1b6a6c78fee
   languageName: node
   linkType: hard
 
-"@churchapps/content-providers@npm:^0.16.1":
-  version: 0.16.1
-  resolution: "@churchapps/content-providers@npm:0.16.1"
-  checksum: 10c0/6e450406c835744caed3653374ec3adbf77d42b2fd2890674a3ab563ef6a1550608f378370079df1879794650dc5a6597c57536b955be6ca6ec08b30d2543642
+"@churchapps/content-providers@npm:^0.17.0":
+  version: 0.17.0
+  resolution: "@churchapps/content-providers@npm:0.17.0"
+  checksum: 10c0/5521c0e3f97f8606d9e66d9a2f6a845e0f70a6cdf5f4363f63f943c406ea299e468e8fb2ee13107ab9cb34d1b34f42f720e32a9d7e22c9029ead80ea97186f4a
   languageName: node
   linkType: hard
 
-"@churchapps/helpers@npm:^2.15.2":
-  version: 2.15.2
-  resolution: "@churchapps/helpers@npm:2.15.2"
+"@churchapps/helpers@npm:^2.18.0":
+  version: 2.18.0
+  resolution: "@churchapps/helpers@npm:2.18.0"
   dependencies:
     dayjs: "npm:^1.11.20"
   peerDependencies:
@@ -461,7 +461,7 @@ __metadata:
   peerDependenciesMeta:
     rrule:
       optional: true
-  checksum: 10c0/273b47b2fdc96c147049d0e34c937679f68eb783b5ad33a2a0321440fd646fb8cd752d46787cd1dd26c6caef026705d9e583e8dcd7a8acfe6eada72800614cc2
+  checksum: 10c0/5e05d15bd6f11e5da2b99e3bf9b6936dab5c64cda3a985f7ec534d086ae12310ff4fd1ccb9e95a96acb90ac45bdfb7ca7f305fcbdfcc86ed662bafcad0304e5a
   languageName: node
   linkType: hard
 
@@ -2690,9 +2690,9 @@ __metadata:
   resolution: "b1admin@workspace:."
   dependencies:
     "@babel/core": "npm:^8.0.1"
-    "@churchapps/apphelper": "npm:^1.11.3"
-    "@churchapps/content-providers": "npm:^0.16.1"
-    "@churchapps/helpers": "npm:^2.15.2"
+    "@churchapps/apphelper": "npm:^1.14.0"
+    "@churchapps/content-providers": "npm:^0.17.0"
+    "@churchapps/helpers": "npm:^2.18.0"
     "@eslint/js": "npm:^10.0.1"
     "@mui/icons-material": "npm:^7.3.11"
     "@mui/material": "npm:^7.3.11"

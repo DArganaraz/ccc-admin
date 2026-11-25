@@ -2,6 +2,7 @@ import { CurrencyHelper, DateHelper, Locale } from "@churchapps/apphelper";
 import { type ChurchInterface, type PersonInterface } from "@churchapps/helpers";
 import { type PledgeProgressRowInterface, type PledgeStatus } from "../../helpers";
 import { receiptShowsDisclaimer } from "./receiptRules";
+import { parseStartMonth, statementRangeDates, statementYearLabel } from "../statementPeriod";
 
 // Every locale key below is written out in full. Building them from the labelPrefix prop at
 // runtime hid them from locale-sync's static scan, which then pruned the whole set out of
@@ -12,10 +13,12 @@ interface StatementLabels {
   contributionDetails: string;
   disclaimer: string;
   donorInformation: string;
+  donorNumber: string;
   fund: string;
   fundBreakdown: string;
   given: string;
   issued: string;
+  memo: string;
   noteLabel: string;
   noteText: string;
   organization: string;
@@ -34,10 +37,12 @@ const printAllStatementsLabels = (): StatementLabels => ({
   contributionDetails: Locale.label("donations.printAllStatementsPage.contributionDetails"),
   disclaimer: Locale.label("donations.printAllStatementsPage.disclaimer"),
   donorInformation: Locale.label("donations.printAllStatementsPage.donorInformation"),
+  donorNumber: Locale.label("donations.printAllStatementsPage.donorNumber"),
   fund: Locale.label("donations.printAllStatementsPage.fund"),
   fundBreakdown: Locale.label("donations.printAllStatementsPage.fundBreakdown"),
   given: Locale.label("donations.printAllStatementsPage.given"),
   issued: Locale.label("donations.printAllStatementsPage.issued"),
+  memo: Locale.label("donations.printAllStatementsPage.memo"),
   noteLabel: Locale.label("donations.printAllStatementsPage.noteLabel"),
   noteText: Locale.label("donations.printAllStatementsPage.noteText"),
   organization: Locale.label("donations.printAllStatementsPage.organization"),
@@ -56,10 +61,12 @@ const printDonationLabels = (): StatementLabels => ({
   contributionDetails: Locale.label("donations.printDonationPage.contributionDetails"),
   disclaimer: Locale.label("donations.printDonationPage.disclaimer"),
   donorInformation: Locale.label("donations.printDonationPage.donorInformation"),
+  donorNumber: Locale.label("donations.printDonationPage.donorNumber"),
   fund: Locale.label("donations.printDonationPage.fund"),
   fundBreakdown: Locale.label("donations.printDonationPage.fundBreakdown"),
   given: Locale.label("donations.printDonationPage.given"),
   issued: Locale.label("donations.printDonationPage.issued"),
+  memo: Locale.label("donations.printDonationPage.memo"),
   noteLabel: Locale.label("donations.printDonationPage.noteLabel"),
   noteText: Locale.label("donations.printDonationPage.noteText"),
   organization: Locale.label("donations.printDonationPage.organization"),
@@ -78,10 +85,12 @@ const receiptLabels = (): StatementLabels => ({
   contributionDetails: Locale.label("donations.receiptPage.contributionDetails"),
   disclaimer: Locale.label("donations.receiptPage.disclaimer"),
   donorInformation: Locale.label("donations.receiptPage.donorInformation"),
+  donorNumber: Locale.label("donations.receiptPage.donorNumber"),
   fund: Locale.label("donations.receiptPage.fund"),
   fundBreakdown: Locale.label("donations.receiptPage.fundBreakdown"),
   given: Locale.label("donations.receiptPage.given"),
   issued: Locale.label("donations.receiptPage.issued"),
+  memo: Locale.label("donations.receiptPage.memo"),
   noteLabel: Locale.label("donations.receiptPage.noteLabel"),
   noteText: Locale.label("donations.receiptPage.noteText"),
   organization: Locale.label("donations.receiptPage.organization"),
@@ -116,6 +125,7 @@ interface LegalLabels {
   placeOfIssue: string;
   receiptNumber: string;
   signature: string;
+  taxId: string;
 }
 
 const legalLabels = (): LegalLabels => ({
@@ -134,7 +144,8 @@ const legalLabels = (): LegalLabels => ({
   nzNumber: Locale.label("donations.statementLegal.nzNumber"),
   placeOfIssue: Locale.label("donations.statementLegal.placeOfIssue"),
   receiptNumber: Locale.label("donations.statementLegal.receiptNumber"),
-  signature: Locale.label("donations.statementLegal.signature")
+  signature: Locale.label("donations.statementLegal.signature"),
+  taxId: Locale.label("donations.statementLegal.taxId")
 });
 
 const pledgeStatusLabel = (status: PledgeStatus | undefined) => {
@@ -148,15 +159,17 @@ const pledgeStatusLabel = (status: PledgeStatus | undefined) => {
   }
 };
 
-interface FundTotal {
+export interface FundTotal {
   fund: string | undefined;
   total: number;
 }
 
-interface ContributionRow {
+export interface ContributionRow {
   date: string;
   method: string | undefined;
   fund: string | undefined;
+  // The donor-facing memo. The gift's internal notes are never passed in.
+  memo?: string;
   amount: number;
   taxDeductible?: boolean;
 }
@@ -168,6 +181,9 @@ export interface StatementSettings {
   signatory: string;
   cityOfIssue: string;
   note: string;
+  // Replaces the fixed "no goods or services" sentence when filled in.
+  disclaimer: string;
+  yearStartMonth: number;
 }
 
 export const parseStatementSettings = (raw: Record<string, string> | undefined): StatementSettings => ({
@@ -176,7 +192,9 @@ export const parseStatementSettings = (raw: Record<string, string> | undefined):
   orgAddress: raw?.statementOrgAddress || "",
   signatory: raw?.statementSignatory || "",
   cityOfIssue: raw?.statementCityOfIssue || "",
-  note: raw?.givingNote || ""
+  note: raw?.givingNote || "",
+  disclaimer: (raw?.statementDisclaimer || "").trim(),
+  yearStartMonth: parseStartMonth(raw?.statementYearStartMonth)
 });
 
 interface Props {
@@ -457,6 +475,34 @@ const styleBlock = `
             font-size: 12px;
             color: #666;
           }
+
+          /* Print: tighter type and spacing so statements don't spill onto extra sheets. */
+          @media print {
+            @page {
+              margin: 0.5in;
+            }
+            .print-container { padding: 0; height: auto; line-height: 1.35; }
+            .header-bar { display: none; }
+            .title-section { margin-bottom: 12px; }
+            .page-title { font-size: 22px; margin-bottom: 4px; }
+            .subtitle, .meta-text { font-size: 11px; margin: 2px 0; }
+            .gradient-divider { margin: 12px 0 16px 0; }
+            .info-section { gap: 24px; margin-bottom: 20px; }
+            .info-card { padding: 10px 12px; }
+            .info-name { font-size: 14px; margin-bottom: 4px; }
+            .info-detail { font-size: 11px; margin: 2px 0; }
+            .section-label { font-size: 11px; margin-bottom: 6px; }
+            .section-container { margin-bottom: 16px; }
+            .section-title { font-size: 15px; margin-bottom: 10px; padding-bottom: 4px; }
+            .total-box { padding: 12px; }
+            .total-amount { font-size: 24px; }
+            .data-table { box-shadow: none; }
+            .table-header th, .table-cell, .table-footer-cell { padding: 4px 8px; font-size: 11px; }
+            .data-table thead { display: table-header-group; }
+            .data-table tr, .info-section, .summary-grid, .footer-note, .legal-block { page-break-inside: avoid; break-inside: avoid; }
+            .footer-note { margin-top: 16px; padding: 8px 12px; font-size: 10px; line-height: 1.4; }
+            .legal-block { margin-bottom: 20px; padding: 12px 16px; }
+          }
         `;
 
 export const GivingStatementDocument = (props: Props) => {
@@ -473,10 +519,25 @@ export const GivingStatementDocument = (props: Props) => {
   const receiptNumber = props.receiptNumber || year + "-" + (person?.id || "");
   // A statement always carries the disclaimer; a receipt drops it when any fund on the gift is not tax-deductible.
   const showDisclaimer = !isReceipt || receiptShowsDisclaimer(contributions);
+  // The Memo column only appears when a gift on this statement has one, so other statements keep their layout.
+  const showMemo = contributions.some((c) => !!c.memo);
   const donorName = person?.name?.display || (isReceipt ? Locale.label("donations.donations.anon") : undefined);
   const orgAddress = statementSettings?.orgAddress || [church?.address1, church?.address2, church?.city, church?.country, church?.zip].filter(Boolean).join(", ");
   const donorAddress = [person?.contactInfo?.address1, person?.contactInfo?.address2, person?.contactInfo?.city, person?.contactInfo?.state, person?.contactInfo?.zip].filter(Boolean).join(", ");
   const issuedDate = DateHelper.prettyDate(new Date()).toString();
+  const startMonth = statementSettings?.yearStartMonth || 1;
+  const yearLabel = isReceipt ? year.toString() : statementYearLabel(year, startMonth);
+  const periodText = () => {
+    if (isReceipt || startMonth === 1) return labels.period.replace("{year}", year.toString()).replace("{date}", receiptDate);
+    const { start, end } = statementRangeDates(year, startMonth);
+    return Locale.label("donations.statementPeriod.range").replace("{start}", DateHelper.prettyDate(start).toString()).replace("{end}", DateHelper.prettyDate(end).toString());
+  };
+  const disclaimerText = (statementSettings?.disclaimer || labels.disclaimer).split("{churchName}").join(churchName);
+
+  // The standard layout has no legal block, so a filled-in Tax ID and organization address print in the
+  // Organization card instead. Country formats already show both in their legal block.
+  const standardTaxId = !format ? statementSettings?.registrationNumber?.trim() || "" : "";
+  const standardOrgAddress = !format ? statementSettings?.orgAddress?.trim() || "" : "";
 
   const legalTitle = format === "australia" ? legal.australiaTitle : format === "canada" ? legal.canadaTitle : legal.newZealandTitle;
   const registrationLabel = format === "australia" ? legal.abn : format === "canada" ? legal.craNumber : legal.nzNumber;
@@ -516,8 +577,8 @@ export const GivingStatementDocument = (props: Props) => {
 
         <div className="title-section">
           {logoUrl && <img src={logoUrl} alt={churchName} data-testid="print-church-logo" style={{ display: "block", maxHeight: 60, maxWidth: 240, objectFit: "contain", margin: "0 auto 16px" }} />}
-          <h1 className="page-title">{labels.annualStatementTitle.replace("{year}", year.toString())}</h1>
-          <p className="subtitle">{labels.period.replace("{year}", year.toString()).replace("{date}", receiptDate)}</p>
+          <h1 className="page-title">{labels.annualStatementTitle.replace("{year}", yearLabel)}</h1>
+          <p className="subtitle" data-testid="statement-period">{periodText()}</p>
           <p className="meta-text">{labels.issued} {`${DateHelper.prettyDate(new Date())} ${DateHelper.prettyTime(new Date())}`}</p>
         </div>
 
@@ -532,6 +593,7 @@ export const GivingStatementDocument = (props: Props) => {
               {person?.contactInfo?.address2 && <p className="info-detail">{person.contactInfo.address2}</p>}
               {person?.contactInfo?.mobilePhone && <p className="info-detail">{person.contactInfo.mobilePhone}</p>}
               {person?.contactInfo?.email && <p className="info-detail">{person.contactInfo.email}</p>}
+              {person?.donorNumber && <p className="info-detail">{labels.donorNumber} {person.donorNumber}</p>}
             </div>
           </div>
 
@@ -539,15 +601,22 @@ export const GivingStatementDocument = (props: Props) => {
             <h2 className="section-label">{labels.organization}</h2>
             <div className="info-card">
               <p className="info-name">{church?.name}</p>
-              {church?.address1 && <p className="info-detail">{church.address1}</p>}
-              {church?.address2 && <p className="info-detail">{church.address2}</p>}
-              {(church?.city || church?.country || church?.zip) && (
-                <p className="info-detail">
-                  {[church?.city, church?.country, church?.zip]
-                    .filter(Boolean)
-                    .join(", ")}
-                </p>
+              {standardOrgAddress ? (
+                <p className="info-detail" data-testid="statement-org-address" style={{ whiteSpace: "pre-line" }}>{standardOrgAddress}</p>
+              ) : (
+                <>
+                  {church?.address1 && <p className="info-detail">{church.address1}</p>}
+                  {church?.address2 && <p className="info-detail">{church.address2}</p>}
+                  {(church?.city || church?.country || church?.zip) && (
+                    <p className="info-detail">
+                      {[church?.city, church?.country, church?.zip]
+                        .filter(Boolean)
+                        .join(", ")}
+                    </p>
+                  )}
+                </>
               )}
+              {standardTaxId && <p className="info-detail" data-testid="statement-tax-id">{legal.taxId}: {standardTaxId}</p>}
             </div>
           </div>
         </div>
@@ -594,6 +663,7 @@ export const GivingStatementDocument = (props: Props) => {
                 <th>Date</th>
                 <th>Method</th>
                 <th>{labels.fund}</th>
+                {showMemo && <th>{labels.memo}</th>}
                 <th className="align-right">Amount</th>
               </tr>
             </thead>
@@ -605,11 +675,12 @@ export const GivingStatementDocument = (props: Props) => {
                   </td>
                   <td className="table-cell">{detail.method}</td>
                   <td className="table-cell">{detail.fund}</td>
+                  {showMemo && <td className="table-cell" data-testid="statement-memo">{detail.memo}</td>}
                   <td className="table-cell align-right">{CurrencyHelper.formatCurrencyWithLocale(detail.amount, currency)}</td>
                 </tr>
               ))}
               <tr className="table-footer-row">
-                <td colSpan={2} className="table-footer-cell"></td>
+                <td colSpan={showMemo ? 3 : 2} className="table-footer-cell"></td>
                 <td className="table-footer-cell" style={{ textAlign: "right" }}>{labels.totalContributionsLabel}</td>
                 <td className="table-footer-cell" style={{ textAlign: "right" }}>{formattedTotal}</td>
               </tr>
@@ -647,12 +718,12 @@ export const GivingStatementDocument = (props: Props) => {
           <p>
             <strong>{labels.noteLabel}</strong> {labels.noteText
               .replace("{churchName}", churchName)
-              .replace("{year}", year.toString())
+              .replace("{year}", yearLabel)
               .replace("{date}", receiptDate)}
           </p>
           {showDisclaimer && (
-            <p data-testid="statement-disclaimer" style={{ fontSize: "10px", marginTop: "4px" }}>
-              {labels.disclaimer.split("{churchName}").join(churchName)}
+            <p data-testid="statement-disclaimer" style={{ fontSize: "10px", marginTop: "4px", whiteSpace: "pre-line" }}>
+              {disclaimerText}
             </p>
           )}
           {statementSettings?.note && <p data-testid="statement-giving-note" style={{ whiteSpace: "pre-line", marginTop: "8px" }}>{statementSettings.note}</p>}

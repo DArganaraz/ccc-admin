@@ -807,6 +807,30 @@ test.describe.serial("Serving Management - Workflows", () => {
     await cleanup.dispose();
   });
 
+  // ChurchAppsSupport#1641: a workflow text can quote the person's donor number.
+  test("the Send Text action offers the Donor Number merge field", async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    const { wf, auto } = await buildActionWorkflow(ctx, auth, []);
+    await ctx.dispose();
+
+    await openBoardById(page, wf.id);
+    await page.locator(`[data-testid="edit-step-${auto.id}"]`).click();
+    await page.locator('[data-testid="add-action-button"]').click();
+    await page.locator('[data-testid="action-type-0"]').click();
+    await page.getByRole("option", { name: "Send Text" }).click();
+    const message = page.locator('[data-testid="action-text-message-0"] textarea').first();
+    await message.fill("Donor #");
+    const chips = page.locator('[data-testid="action-text-merge-fields-0"]');
+    await chips.getByText("Donor Number", { exact: true }).click();
+    await expect(message).toHaveValue("Donor #{{donorNumber}}");
+
+    const cleanup = await request.newContext();
+    const auth2 = await apiAuth(cleanup);
+    await cleanup.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth2);
+    await cleanup.dispose();
+  });
+
   // ChurchAppsSupport#1440: the Send Text action can start from a saved text template, like Mass Texting.
   test("a Send Text action can start from a text template and stay editable", async () => {
     const ctx = await request.newContext();
@@ -867,6 +891,25 @@ test.describe.serial("Serving Management - Workflows", () => {
     const actions = await (await ctx.get(`${API_BASE}/doing/workflowStepActions/step/${auto.id}`, auth)).json();
     expect(actions.map((a: any) => a.actionType)).toEqual(["delay"]);
     expect(JSON.parse(actions[0].config).days).toBe(3);
+    await ctx.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth);
+    await ctx.dispose();
+  });
+
+  test("clearing a step's due days saves it as no due date", async () => {
+    const ctx = await request.newContext();
+    const auth = await apiAuth(ctx);
+    const { wf, auto } = await buildActionWorkflow(ctx, auth, []);
+    await ctx.post(`${API_BASE}/doing/workflowSteps`, { ...auth, data: [{ ...auto, expectedResponseDays: 3 }] });
+    await openBoardById(page, wf.id);
+    await page.locator(`[data-testid="edit-step-${auto.id}"]`).click();
+    const dueDays = page.locator('[data-testid="step-due-days-input"] input');
+    await expect(dueDays).toHaveValue("3", { timeout: 10000 });
+    await dueDays.fill("");
+    await page.locator('[data-testid="step-save-button"]').click();
+    await expect(page.locator('[data-testid="step-save-button"]')).toHaveCount(0, { timeout: 10000 });
+
+    await page.locator(`[data-testid="edit-step-${auto.id}"]`).click();
+    await expect(page.locator('[data-testid="step-due-days-input"] input')).toHaveValue("", { timeout: 10000 });
     await ctx.delete(`${API_BASE}/doing/workflows/${wf.id}`, auth);
     await ctx.dispose();
   });

@@ -9,8 +9,9 @@ import UserContext from "../UserContext";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PersonIdentity } from "./components/PersonIdentity";
 import { useHousehold } from "./components/Household";
-import { PersonAttendanceSummary, PersonFormsSummary, PersonGivingSummary, PersonGroupsSummary, PersonNotesSummary, PersonRequestsSummary } from "./components/PersonSummaries";
+import { PersonAttendanceSummary, PersonDeliveryProblemsSummary, PersonFormsSummary, PersonGivingSummary, PersonGroupsSummary, PersonNotesSummary, PersonRequestsSummary } from "./components/PersonSummaries";
 import { LogGiftDialog } from "../donations/components/LogGiftDialog";
+import { PersonDocumentsSummary } from "./components/PersonDocumentsSummary";
 
 const FORM_VIEWS = ["edit", "household"];
 
@@ -26,10 +27,11 @@ export const PersonPage = () => {
   const [editPerson, setEditPerson] = React.useState<PersonInterface | null>(null);
 
   const canEdit = useMemo(() => UserHelper.checkAccess(Permissions.membershipApi.people.edit), []);
+  const canViewPeople = useMemo(() => UserHelper.checkAccess(Permissions.membershipApi.people.view), []);
   const canViewAttendance = useMemo(() => UserHelper.checkAccess(Permissions.attendanceApi.attendance.view), []);
   const canViewGiving = useMemo(() => UserHelper.checkAccess(Permissions.givingApi.donations.view), []);
   const churchId = UserHelper.currentUserChurch?.church?.id || "";
-  const publicSettings = useQuery<any>({ queryKey: ["/settings/public/" + churchId, "MembershipApi"], enabled: !!churchId && canViewGiving });
+  const publicSettings = useQuery<Record<string, string>>({ queryKey: ["/settings/public/" + churchId, "MembershipApi"], enabled: !!churchId && canViewGiving });
   const givingHidden = publicSettings.data?.hideGivingOnPerson === "true";
   const canLogGift = useMemo(() => UserHelper.checkAccess(Permissions.givingApi.donations.edit), []);
   const [showLogGift, setShowLogGift] = React.useState(false);
@@ -87,7 +89,7 @@ export const PersonPage = () => {
     if (conversationId) rooms.push(conversationId);
     rooms.forEach((room) => SubscriptionManager.joinRoom(room, churchId, personId).catch(() => { /* ignore */ }));
     const handlerId = `PersonPage-${params.id}`;
-    SocketHelper.addHandler("conversationActivity", handlerId, (data: any) => {
+    SocketHelper.addHandler("conversationActivity", handlerId, (data: { contentType?: string; contentId?: string } | null) => {
       if (data?.contentType === "person" && data?.contentId === params.id) refetchRef.current();
     });
     return () => {
@@ -267,6 +269,8 @@ export const PersonPage = () => {
             {canViewGiving && !publicSettings.isLoading && <PersonGivingSummary personId={person.id!} householdMembers={household.members} onViewAll={() => setView("giving")} onLogGift={canLogGift ? () => setShowLogGift(true) : undefined} hidden={givingHidden} />}
             <PersonGroupsSummary personId={person.id!} />
             {canEdit && <PersonNotesSummary conversationId={person.conversationId || ""} onViewAll={() => setView("notes")} />}
+            {canEdit && <PersonDeliveryProblemsSummary personId={person.id!} />}
+            {canViewPeople && <PersonDocumentsSummary personId={person.id!} canEdit={canEdit} />}
             {showForms && <PersonFormsSummary person={person} forms={visibleForms} onOpen={(formId) => setView("forms", { form: formId || "" })} />}
             {(canViewRequests || canViewRegistrations) && <PersonRequestsSummary personId={person.id!} canViewRequests={canViewRequests} canViewRegistrations={canViewRegistrations} onViewAll={() => setView("requests")} />}
           </>

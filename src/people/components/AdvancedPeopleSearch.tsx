@@ -1,8 +1,8 @@
 import React, { memo, useCallback, useState, useMemo, useEffect, useRef } from "react";
 import { B1AdminPersonHelper } from ".";
 import { useCampuses } from "../../hooks/useCampuses";
-import { type GroupMemberInterface, type SearchCondition, type GroupInterface, type ServiceInterface, type ServiceTimeInterface, type QuestionInterface, type FormSubmissionInterface } from "@churchapps/helpers";
-import { ArrayHelper, ApiHelper, Locale, DateHelper, Permissions } from "@churchapps/apphelper";
+import { type GroupMemberInterface, type SearchCondition, type GroupInterface, type ServiceInterface, type ServiceTimeInterface, type QuestionInterface, type FormSubmissionInterface, type FormInterface } from "@churchapps/helpers";
+import { ArrayHelper, ApiHelper, Locale, DateHelper, Permissions, UserHelper } from "@churchapps/apphelper";
 import { FormCard } from "../../components/ui";
 import { type PersonInterface, type FundDonationInterface, type FundInterface } from "@churchapps/helpers";
 import {
@@ -25,7 +25,9 @@ import {
   DialogContent,
   DialogActions,
   Paper,
-  alpha
+  ListItemText,
+  alpha,
+  type Theme
 } from "@mui/material";
 import {
   ExpandMore as ExpandMoreIcon,
@@ -39,6 +41,8 @@ import {
   Assignment as CustomFieldIcon
 } from "@mui/icons-material";
 import { getMembershipStatusOptions } from "../helpers/MembershipStatusOptions";
+import { GRADE_OPTIONS } from "../../helpers/GradeOptions";
+import { getGroupCategories, getGroupIdsForCategory, isAnyFundOperator, isNotDonatedOperator } from "./listRules";
 import { type PersonFieldInterface } from "../../helpers/Interfaces";
 import { AppDatePicker } from "../../components";
 
@@ -80,7 +84,9 @@ interface FilterField {
   label: string;
   type: "text" | "select" | "number" | "date" | "complex";
   operators?: string[];
+  operatorLabels?: Record<string, string>;
   options?: Array<{ value: string; label: string }>;
+  multiple?: boolean;
   icon?: React.ReactNode;
 }
 
@@ -116,7 +122,7 @@ const styles = {
   activeFiltersPaper: {
     p: 1.5,
     mb: 2,
-    bgcolor: (theme: any) => alpha(theme.palette.primary.main, 0.05),
+    bgcolor: (theme: Theme) => alpha(theme.palette.primary.main, 0.05),
     borderRadius: 1
   },
   filterChip: {
@@ -137,7 +143,7 @@ const styles = {
     borderColor: "divider"
   },
   accordionSummary: {
-    bgcolor: (theme: any) => alpha(theme.palette.primary.main, 0.02),
+    bgcolor: (theme: Theme) => alpha(theme.palette.primary.main, 0.02),
     minHeight: 42,
     "&.Mui-expanded": {
       minHeight: 42,
@@ -155,7 +161,7 @@ const styles = {
     px: 0.5,
     borderRadius: 0.5
   },
-  filterRowActive: (theme: any) => ({ bgcolor: alpha(theme.palette.primary.main, 0.03) }),
+  filterRowActive: (theme: Theme) => ({ bgcolor: alpha(theme.palette.primary.main, 0.03) }),
   checkbox: { p: 0.5 },
   filterLabel: {
     fontSize: "0.8125rem",
@@ -220,6 +226,7 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
           type: "select",
           operators: ["equals"],
           options: [
+            { value: "thisMonth", label: Locale.label("people.advancedSearch.thisMonth") },
             { value: "1", label: Locale.label("month.jan") },
             { value: "2", label: Locale.label("month.feb") },
             { value: "3", label: Locale.label("month.mar") },
@@ -254,6 +261,7 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
           type: "select",
           operators: ["equals"],
           options: [
+            { value: "thisMonth", label: Locale.label("people.advancedSearch.thisMonth") },
             { value: "1", label: Locale.label("month.jan") },
             { value: "2", label: Locale.label("month.feb") },
             { value: "3", label: Locale.label("month.mar") },
@@ -268,7 +276,17 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
             { value: "12", label: Locale.label("month.dec") }
           ]
         },
-        { key: "yearsMarried", label: Locale.label("people.editCondition.marYears"), type: "number", operators: ["equals", "greaterThan", "greaterThanEqual", "lessThan", "lessThanEqual"] }
+        { key: "yearsMarried", label: Locale.label("people.editCondition.marYears"), type: "number", operators: ["equals", "greaterThan", "greaterThanEqual", "lessThan", "lessThanEqual"] },
+        {
+          key: "grade",
+          label: Locale.label("person.grade"),
+          type: "select",
+          operators: ["in", "notIn"],
+          operatorLabels: { in: Locale.label("people.editCondition.isAnyOf"), notIn: Locale.label("people.editCondition.isNoneOf") },
+          multiple: true,
+          options: GRADE_OPTIONS.map((g) => ({ value: g, label: g }))
+        },
+        { key: "school", label: Locale.label("person.school"), type: "text", operators: ["contains", "equals", "startsWith", "endsWith"] }
       ],
       contact: [
         { key: "email", label: Locale.label("person.email"), type: "text", operators: ["contains", "equals", "startsWith", "endsWith"] },
@@ -283,7 +301,9 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
           key: "membershipStatus",
           label: Locale.label("person.membershipStatus"),
           type: "select",
-          operators: ["equals", "notEquals"],
+          operators: ["in", "notIn"],
+          operatorLabels: { in: Locale.label("people.editCondition.isAnyOf"), notIn: Locale.label("people.editCondition.isNoneOf") },
+          multiple: true,
           options: getMembershipStatusOptions()
         },
         {
@@ -326,7 +346,8 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
               case "Checkbox":
                 type = "select";
                 operators = ["equals", "contains"];
-                options = q.choices?.map((c: any) => ({ value: c.value || c.text, label: c.text })) || [];
+                // The form editor always saves a choice's text.
+                options = (q.choices as { value?: string; text: string }[] | undefined)?.map((c) => ({ value: c.value || c.text, label: c.text })) || [];
                 break;
               default:
                 // Textbox, Text Area, Email, Phone Number - keep as text
@@ -354,15 +375,25 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
         operators: ["in", "notIn"],
         options: groups.map((g) => ({ value: g.id || "", label: g.name || "" }))
       });
+      const categoryOptions = getGroupCategories(groups).map((c) => ({ value: c, label: c }));
+      if (categoryOptions.length > 0) {
+        categories.membership.push({
+          key: "groupCategory",
+          label: Locale.label("people.editCondition.groupCategory"),
+          type: "select",
+          operators: ["in", "notIn"],
+          options: categoryOptions
+        });
+      }
     }
 
     // Add donations if permissions allow
-    if (Permissions.givingApi.donations) {
+    if (UserHelper.checkAccess(Permissions.givingApi.donations.view)) {
       categories.activity.push({
         key: "memberDonations",
         label: Locale.label("people.editCondition.memDon"),
         type: "complex",
-        operators: ["donatedToAny", "donatedTo"]
+        operators: ["donatedToAny", "donatedTo", "notDonatedToAny", "notDonatedTo"]
       });
     }
 
@@ -388,7 +419,7 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
     }
 
     if (category === "activity") {
-      if (Permissions.givingApi.donations) {
+      if (UserHelper.checkAccess(Permissions.givingApi.donations.view)) {
         const fundData = await ApiHelper.get("/funds", "GivingApi");
         setFunds(fundData);
       }
@@ -405,11 +436,11 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
     }
 
     if (category === "customFields") {
-      const [forms, fields] = await Promise.all([
+      const [forms, fields]: [FormInterface[], PersonFieldInterface[] | null] = await Promise.all([
         ApiHelper.get("/forms?contentType=person", "MembershipApi"),
         ApiHelper.get("/personfields", "MembershipApi").catch(() => [])
       ]);
-      const personForms = forms.filter((f: any) => f.contentType === "person");
+      const personForms = forms.filter((f: FormInterface) => f.contentType === "person");
       const allQuestions: QuestionInterface[] = [];
       for (const form of personForms) {
         const questions = await ApiHelper.get("/questions?formId=" + form.id, "MembershipApi");
@@ -488,7 +519,7 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
   };
 
   // Auto-search on filter change; report spec for "Save as List" offer.
-  // customFieldQuestions is a dep so a seeded customField_ filter re-runs once its questions load.
+  // customFieldQuestions/groups are deps so a seeded customField_/groupCategory filter re-runs once its options load.
   useEffect(() => {
     const seq = ++searchSeqRef.current;
     if (debounceTimerRef.current) {
@@ -499,7 +530,7 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
       props.onReportCriteria?.(activeFilters);
       debounceTimerRef.current = setTimeout(async () => {
         const postConditions = await convertConditions();
-        const data: any = await ApiHelper.post("/people/advancedSearch", postConditions, "MembershipApi");
+        const data: PersonInterface[] = await ApiHelper.post("/people/advancedSearch", postConditions, "MembershipApi");
         if (seq !== searchSeqRef.current) return;
         props.updateSearchResults(data.map((d: PersonInterface) => B1AdminPersonHelper.getExpandedPersonObject(d)));
       }, 500);
@@ -510,23 +541,23 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
         props.resetSearchResults?.();
       }
     }
-  }, [activeFilters, customFieldQuestions]);
+  }, [activeFilters, customFieldQuestions, groups]);
 
   const handleComplexFilterSave = () => {
     if (!complexFilterDialog.field || !complexConfig) return;
 
     const filters = { ...activeFilters };
     if (complexConfig.type === "donation") {
-      if (complexConfig.operator === "donatedToAny") {
+      if (isAnyFundOperator(complexConfig.operator)) {
         filters[complexFilterDialog.field] = {
           field: "memberDonations",
-          operator: "donatedToAny",
+          operator: complexConfig.operator,
           value: JSON.stringify([{ value: "any", text: "Any" }, { from: complexConfig.fromDate, to: complexConfig.toDate }])
         };
       } else {
         filters[complexFilterDialog.field] = {
           field: "memberDonations",
-          operator: "donatedTo",
+          operator: complexConfig.operator === "notDonatedTo" ? "notDonatedTo" : "donatedTo",
           value: JSON.stringify([{ value: complexConfig.entityValue, text: complexConfig.entityText }, { from: complexConfig.fromDate, to: complexConfig.toDate }])
         };
       }
@@ -557,16 +588,28 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
           if (filter.operator === "notIn") peopleIds.forEach((pid) => result.push({ field: "id", operator: "notEqual", value: pid }));
           else result.push({ field: "id", operator: "in", value: peopleIds.join(",") });
           break;
+        case "groupCategory": {
+          const catGroupIds = getGroupIdsForCategory(groups, filter.value);
+          let catPeopleIds: string[] = [];
+          if (catGroupIds.length > 0) {
+            const catMembers: GroupMemberInterface[] = await ApiHelper.get(`/groupmembers?groupIds=${catGroupIds.join(",")}`, "MembershipApi");
+            catPeopleIds = ArrayHelper.getUniqueValues(catMembers, "personId").filter((id: string) => !!id);
+          }
+          if (filter.operator === "notIn") catPeopleIds.forEach((pid) => result.push({ field: "id", operator: "notEqual", value: pid }));
+          else result.push({ field: "id", operator: "in", value: catPeopleIds.join(",") });
+          break;
+        }
         case "memberDonations":
           const fundVal = JSON.parse(filter.value);
           let memberDonations: FundDonationInterface[];
-          if (filter.operator === "donatedToAny") {
+          if (isAnyFundOperator(filter.operator)) {
             memberDonations = await ApiHelper.get(`/funddonations?startDate=${fundVal[1].from}&endDate=${fundVal[1].to}`, "GivingApi");
           } else {
             memberDonations = await ApiHelper.get(`/funddonations?fundId=${fundVal[0].value}&startDate=${fundVal[1].from}&endDate=${fundVal[1].to}`, "GivingApi");
           }
           const memberIds = ArrayHelper.getUniqueValues(memberDonations, "donation.personId").filter((f) => f !== null);
-          result.push({ field: "id", operator: "in", value: memberIds.join(",") });
+          // "Has not donated" keeps everyone except the donors in the range; the Api matches "notIn" on id as a set.
+          result.push({ field: "id", operator: isNotDonatedOperator(filter.operator) ? "notIn" : "in", value: memberIds.join(",") });
           break;
         case "memberAttendance":
           const attendanceValue = JSON.parse(filter.value);
@@ -609,7 +652,7 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
               const isDateField = question.fieldType === "Date";
 
               for (const submission of formSubmissions) {
-                const answer = submission.answers?.find((a: any) => a.questionId === questionId);
+                const answer = submission.answers?.find((a) => a.questionId === questionId);
                 if (answer?.value) {
                   let matches = false;
 
@@ -667,13 +710,13 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
       }
     }
     return result;
-  }, [activeFilters, customFieldQuestions]);
+  }, [activeFilters, customFieldQuestions, groups]);
 
   const handleAdvancedSearch = useCallback(async () => {
     const seq = ++searchSeqRef.current;
     props.onReportCriteria?.(activeFilters);
     const postConditions = await convertConditions();
-    const data: any = await ApiHelper.post("/people/advancedSearch", postConditions, "MembershipApi");
+    const data: PersonInterface[] = await ApiHelper.post("/people/advancedSearch", postConditions, "MembershipApi");
     if (seq !== searchSeqRef.current) return;
     props.updateSearchResults(data.map((d: PersonInterface) => B1AdminPersonHelper.getExpandedPersonObject(d)));
   }, [convertConditions, props.updateSearchResults, activeFilters]);
@@ -690,7 +733,7 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
   const renderOperatorSelect = (field: FilterField) => {
     if (!activeFilters[field.key] || !field.operators) return null;
 
-    const operatorLabels: Record<string, string> = {
+    const baseLabels: Record<string, string> = {
       equals: "=",
       notEquals: "≠",
       contains: Locale.label("people.editCondition.contains"),
@@ -704,6 +747,7 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
       in: Locale.label("people.editCondition.isMem"),
       notIn: Locale.label("people.editCondition.notMem")
     };
+    const operatorLabels = { ...baseLabels, ...(field.operatorLabels ?? {}) };
 
     return (
       <Select
@@ -724,6 +768,31 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
 
   const renderValueInput = (field: FilterField) => {
     if (!activeFilters[field.key]) return null;
+
+    // Multi-select values travel as a comma list (the Api's in / notIn); status values hold no commas.
+    if (field.type === "select" && field.multiple && field.options) {
+      const options = field.options;
+      const selected = activeFilters[field.key].value ? activeFilters[field.key].value.split(",") : [];
+      return (
+        <Select
+          multiple
+          value={selected}
+          onChange={(e) => updateFilterValue(field.key, (e.target.value as string[]).join(","))}
+          renderValue={(values) => (values as string[]).map((v) => options.find((o) => o.value === v)?.label ?? v).join(", ")}
+          variant="outlined"
+          size="small"
+          fullWidth
+          sx={styles.inputCommon}
+        >
+          {options.map((opt) => (
+            <MenuItem key={opt.value} value={opt.value} sx={styles.menuItem}>
+              <Checkbox size="small" checked={selected.includes(opt.value)} sx={{ p: 0.5, mr: 0.5 }} />
+              <ListItemText primary={opt.label} />
+            </MenuItem>
+          ))}
+        </Select>
+      );
+    }
 
     if (field.type === "select" && field.options) {
       return (
@@ -768,7 +837,8 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
       try {
         const parsed = JSON.parse(filter.value);
         displayText = `${parsed[0]?.text || Locale.label("people.editCondition.any")}`;
-      } catch (e) {
+        if (isNotDonatedOperator(filter.operator)) displayText = Locale.label("people.editCondition.notDonChip", "Not donated: {fund}").replace("{fund}", displayText);
+      } catch {
         // ignore
       }
     }
@@ -791,7 +861,7 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
                 fromDate: parsed[1]?.from || DateHelper.formatHtml5Date(new Date()),
                 toDate: parsed[1]?.to || DateHelper.formatHtml5Date(new Date())
               });
-            } catch (e) {
+            } catch {
               // ignore
             }
           }
@@ -837,7 +907,7 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
     const categories = new Set<string>();
     Object.keys(props.initialFilters).forEach((key) => {
       if (key.startsWith("customField_") || key.startsWith("personField_")) categories.add("customFields");
-      else if (key === "groupMember") categories.add("membership");
+      else if (key === "groupMember" || key === "groupCategory") categories.add("membership");
       else if (key === "memberDonations" || key === "memberAttendance") categories.add("activity");
     });
     categories.forEach((c) => loadCategoryData(c));
@@ -960,7 +1030,7 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
                         </Stack>
                         {activeFilters[field.key] && (
                           <Stack direction="row" spacing={0.75} sx={{ pl: 3.5, alignItems: "center" }}>
-                            {field.type !== "complex" && (field.type !== "select" || field.key === "groupMember") && (
+                            {field.type !== "complex" && (field.type !== "select" || (field.operators?.length ?? 0) > 1) && (
                               <Box sx={{ flexShrink: 0 }}>
                                 {renderOperatorSelect(field)}
                               </Box>
@@ -1011,7 +1081,9 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
                   }}>
                   {complexFilterDialog.field === "memberDonations" ? [
                     <MenuItem key="donatedToAny" value="donatedToAny">{Locale.label("people.editCondition.hasDon")}</MenuItem>,
-                    <MenuItem key="donatedTo" value="donatedTo">{Locale.label("people.editCondition.donTo")}</MenuItem>
+                    <MenuItem key="donatedTo" value="donatedTo">{Locale.label("people.editCondition.donTo")}</MenuItem>,
+                    <MenuItem key="notDonatedToAny" value="notDonatedToAny">{Locale.label("people.editCondition.notDon", "has not donated (in general)")}</MenuItem>,
+                    <MenuItem key="notDonatedTo" value="notDonatedTo">{Locale.label("people.editCondition.notDonTo", "has not donated to")}</MenuItem>
                   ] : [
                     <MenuItem key="attendedAny" value="attendedAny">{Locale.label("people.editCondition.attGen")}</MenuItem>,
                     <MenuItem key="attendedCampus" value="attendedCampus">{Locale.label("people.editCondition.attCamp")}</MenuItem>,
@@ -1023,7 +1095,7 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
               </FormControl>
 
               {complexConfig?.operator &&
-              complexConfig.operator !== "donatedToAny" &&
+              !isAnyFundOperator(complexConfig.operator) &&
               complexConfig.operator !== "attendedAny" && (
                 <FormControl fullWidth>
                   <InputLabel>
@@ -1174,7 +1246,9 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
                 }}>
                 {complexFilterDialog.field === "memberDonations" ? [
                   <MenuItem key="donatedToAny" value="donatedToAny">{Locale.label("people.editCondition.hasDon")}</MenuItem>,
-                  <MenuItem key="donatedTo" value="donatedTo">{Locale.label("people.editCondition.donTo")}</MenuItem>
+                  <MenuItem key="donatedTo" value="donatedTo">{Locale.label("people.editCondition.donTo")}</MenuItem>,
+                  <MenuItem key="notDonatedToAny" value="notDonatedToAny">{Locale.label("people.editCondition.notDon", "has not donated (in general)")}</MenuItem>,
+                  <MenuItem key="notDonatedTo" value="notDonatedTo">{Locale.label("people.editCondition.notDonTo", "has not donated to")}</MenuItem>
                 ] : [
                   <MenuItem key="attendedAny" value="attendedAny">{Locale.label("people.editCondition.attGen")}</MenuItem>,
                   <MenuItem key="attendedCampus" value="attendedCampus">{Locale.label("people.editCondition.attCamp")}</MenuItem>,
@@ -1186,7 +1260,7 @@ export const AdvancedPeopleSearch = memo(function AdvancedPeopleSearch(props: Pr
             </FormControl>
 
             {complexConfig?.operator &&
-              complexConfig.operator !== "donatedToAny" &&
+              !isAnyFundOperator(complexConfig.operator) &&
               complexConfig.operator !== "attendedAny" && (
               <FormControl fullWidth>
                 <InputLabel>

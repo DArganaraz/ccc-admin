@@ -3,7 +3,7 @@ import { FormQuestionEdit } from ".";
 import { type FormInterface, type QuestionInterface } from "@churchapps/helpers";
 import { ApiHelper, Permissions, Loading, UserHelper, Locale } from "@churchapps/apphelper";
 import { Icon, Table, TableBody, TableCell, TableRow, TableHead, Box, Typography, Stack, Button } from "@mui/material";
-import { ArrowUpward as ArrowUpwardIcon, ArrowDownward as ArrowDownwardIcon } from "@mui/icons-material";
+import { ArrowUpward as ArrowUpwardIcon, ArrowDownward as ArrowDownwardIcon, ContentCopy as ContentCopyIcon } from "@mui/icons-material";
 import { AppIconButton } from "../../components/ui/AppIconButton";
 import { CardWithHeader, hoverRowSx, tableScrollSx } from "../../components/ui";
 
@@ -23,10 +23,10 @@ export const Form: React.FC<Props> = (props) => {
     setEditQuestionId("notset");
   };
   const loadData = () => {
-    ApiHelper.get("/forms/" + props.id, "MembershipApi").then((data: any) => setForm(data));
+    ApiHelper.get("/forms/" + props.id, "MembershipApi").then((data: FormInterface) => setForm(data));
     loadQuestions();
   };
-  const loadQuestions = () => ApiHelper.get("/questions?formId=" + props.id, "MembershipApi").then((data: any) => setQuestions(data));
+  const loadQuestions = () => ApiHelper.get("/questions?formId=" + props.id, "MembershipApi").then((data: QuestionInterface[]) => setQuestions(data));
   const sendSort = (questionId: string, direction: "up" | "down") => {
     sortQueue.current = sortQueue.current.then(() => ApiHelper.get("/questions/sort/" + questionId + "/" + direction, "MembershipApi")).catch(() => loadQuestions());
   };
@@ -58,6 +58,19 @@ export const Form: React.FC<Props> = (props) => {
     tmpQuestions.splice(idx + 1, 0, question);
     setQuestions(tmpQuestions);
     sendSort(question.id || "", "down");
+  };
+  // The Api appends new questions, so move the copy up until it sits right under the original.
+  const duplicate = async (idx: number) => {
+    const { id: _id, ...source } = questionList[idx] as QuestionInterface & { sort?: string };
+    delete source.sort;
+    const title = Locale.label("forms.form.copyTitle").replace("{}", source.title || "").substring(0, 255);
+    const saved: QuestionInterface[] = await ApiHelper.post("/questions/", [{ ...source, title }], "MembershipApi");
+    const copyId = saved?.[0]?.id;
+    if (!copyId) return loadQuestions();
+    for (let i = questionList.length; i > idx + 1; i--) sendSort(copyId, "up");
+    await sortQueue.current;
+    await loadQuestions();
+    setEditQuestionId(copyId);
   };
   const getRows = () => {
     const rows: JSX.Element[] = [];
@@ -105,6 +118,7 @@ export const Form: React.FC<Props> = (props) => {
           </TableCell>
           <TableCell className="rowActions">
             <Stack direction="row" spacing={0.5} alignItems="center">
+              <AppIconButton label={Locale.label("forms.form.duplicateAria")} icon={<ContentCopyIcon />} onClick={() => duplicate(i)} data-testid="question-duplicate-button" sx={{ p: 0.5 }} />
               {upArrow}
               {downArrow}
             </Stack>

@@ -6,6 +6,7 @@ import { DisplayBox, ExportLink, Loading, PrintStyles } from "../";
 import { PrintChurchHeader } from "../PrintChurchHeader";
 import { CurrencyHelper } from "@churchapps/apphelper";
 import { ApiHelper, Locale } from "../../helpers";
+import { withBase } from "../../helpers/basePath";
 import { useReactToPrint } from "react-to-print";
 import { TableReport } from "./TableReport";
 import { ChartReport } from "./ChartReport";
@@ -17,6 +18,15 @@ import { useMountedState } from "@churchapps/apphelper";
 import { AppIconButton } from "../ui/AppIconButton";
 import UserContext from "../../UserContext";
 
+// One person's row from /donations/summary?type=person; personId is null for anonymous gifts.
+interface PersonDonationSummary {
+  personId: string | null;
+  totalAmount: number;
+  funds: Record<string, number>[];
+}
+
+type SummaryExportRow = Record<string, string | number>;
+
 interface Props {
   keyName: string;
   report: ReportInterface | null;
@@ -24,7 +34,7 @@ interface Props {
 
 export const ReportOutput = (props: Props) => {
   const [reportResult, setReportResult] = React.useState<ReportResultInterface | null>(null);
-  const [detailedPersonSummary, setDetailedPersonSummary] = React.useState<any[] | null>(null);
+  const [detailedPersonSummary, setDetailedPersonSummary] = React.useState<SummaryExportRow[] | null>(null);
   const [customHeaders, setCustomHeaders] = React.useState<{ label: string; key: string }[]>([]);
   const [anchorEl, setAnchorEl] = React.useState<null | HTMLElement>(null);
   const [downloadData, setDownloadData] = React.useState<ReportResultInterface | null>(null);
@@ -48,13 +58,13 @@ export const ReportOutput = (props: Props) => {
 
   const handlePrint = useReactToPrint({ contentRef });
 
-  const populatePeople = async (data: any[]) => {
-    const result: any[] = [];
+  const populatePeople = async (data: PersonDonationSummary[]) => {
+    const result: SummaryExportRow[] = [];
     const headers: { label: string; key: string }[] = [];
     const peopleIds = ArrayHelper.getIds(data, "personId");
     if (peopleIds.length > 0) {
       const people: PersonInterface[] = await ApiHelper.get("/people/ids?ids=" + peopleIds.join(","), "MembershipApi");
-      const rank = new Map(people.map((p, i) => [p.id, i]));
+      const rank = new Map<string | null | undefined, number>(people.map((p, i) => [p.id, i]));
       const filteredData = data.filter((d) => d.personId !== null).sort((a, b) => (rank.get(a.personId) ?? Infinity) - (rank.get(b.personId) ?? Infinity));
       filteredData.forEach((d) => {
         const person: PersonInterface = ArrayHelper.getOne(people, "id", d.personId);
@@ -133,7 +143,7 @@ export const ReportOutput = (props: Props) => {
 
       if (props.keyName === "donationSummary") {
         const donationUrl = "/donations/summary?type=person&" + queryParams.join("&");
-        ApiHelper.get(donationUrl, "GivingApi").then((data: any) => {
+        ApiHelper.get(donationUrl, "GivingApi").then((data: PersonDonationSummary[] | null) => {
           if (Array.isArray(data)) populatePeople(data);
         }).catch(() => {});
       }
@@ -198,7 +208,7 @@ export const ReportOutput = (props: Props) => {
               <Button
                 startIcon={<DescriptionIcon />}
                 onClick={() => {
-                  window.open("/downloads/DonationTemplate.docx");
+                  window.open(withBase("/downloads/DonationTemplate.docx"));
                 }}>
                 {Locale.label("reporting.sampleTemplate")}
               </Button>

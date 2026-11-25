@@ -1,8 +1,9 @@
 import React, { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { type HouseholdInterface, type PersonInterface } from "@churchapps/helpers";
 import { ApiHelper, DateHelper, Locale, Permissions, PersonAvatar, PersonHelper, UserHelper } from "@churchapps/apphelper";
-import { Box, Button, ButtonBase, Link, Stack, Typography } from "@mui/material";
-import { Check as CheckIcon, ChatBubbleOutline as TextIcon, Close as CloseIcon, MailOutline as MailIcon, WarningAmber as WarningIcon } from "@mui/icons-material";
+import { Box, Button, ButtonBase, Link, Stack, Tooltip, Typography } from "@mui/material";
+import { Check as CheckIcon, ChatBubbleOutline as TextIcon, Close as CloseIcon, ErrorOutline as BouncedIcon, MailOutline as MailIcon, WarningAmber as WarningIcon } from "@mui/icons-material";
 import { SendEmailDialog } from "../../groups/components/SendEmailDialog";
 import { SendTextDialog } from "../../groups/components/SendTextDialog";
 import { type PersonFieldInterface, type PersonFieldValueInterface } from "../../helpers/Interfaces";
@@ -31,19 +32,26 @@ interface Props {
 
 export const PersonIdentity: React.FC<Props> = (props) => {
   const { person } = props;
+  const smsOptedOut = !!(person as PersonInterface & { smsOptedOut?: boolean }).smsOptedOut;
   const [userEmail, setUserEmail] = React.useState("");
   const [customFields, setCustomFields] = React.useState<PersonFieldInterface[]>([]);
   const [customValues, setCustomValues] = React.useState<Record<string, string>>({});
   const [hasTextingProvider, setHasTextingProvider] = React.useState(false);
+  const [textRemindersOn, setTextRemindersOn] = React.useState<boolean | null>(null);
+  const [textRemindersError, setTextRemindersError] = React.useState(false);
   const [showEmailDialog, setShowEmailDialog] = React.useState(false);
   const [showTextDialog, setShowTextDialog] = React.useState(false);
   const [showWorkflowDialog, setShowWorkflowDialog] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
   const campuses = useCampuses();
+  const churchId = UserHelper.currentUserChurch?.church?.id || "";
+  const publicSettings = useQuery<Record<string, string>>({ queryKey: ["/settings/public/" + churchId, "MembershipApi"], enabled: !!churchId });
+  const localPhones = publicSettings.data?.phoneFormat === "local";
 
   const canEdit = useMemo(() => UserHelper.checkAccess(Permissions.membershipApi.people.edit), []);
   const canEmail = useMemo(() => UserHelper.checkAccess(Permissions.membershipApi.groupMembers.edit), []);
   const canText = useMemo(() => UserHelper.checkAccess(Permissions.messagingApi.texting.send), []);
+  const canViewPeople = useMemo(() => UserHelper.checkAccess(Permissions.membershipApi.people.view) || UserHelper.checkAccess(Permissions.membershipApi.people.edit), []);
   const formPermission = useMemo(() => UserHelper.checkAccess(Permissions.membershipApi.forms.admin) || UserHelper.checkAccess(Permissions.membershipApi.forms.edit), []);
 
   React.useEffect(() => {
@@ -80,6 +88,27 @@ export const PersonIdentity: React.FC<Props> = (props) => {
       .catch(() => setHasTextingProvider(false));
   }, [canText]);
 
+  const showTextReminders = !!person.contactInfo?.mobilePhone && canText && hasTextingProvider;
+  React.useEffect(() => {
+    setTextRemindersOn(null);
+    setTextRemindersError(false);
+    if (!person.id || !showTextReminders) return;
+    ApiHelper.get(`/notificationpreferences/person/${person.id}/sms`, "MessagingApi")
+      .then((data: { allowSms?: boolean }) => setTextRemindersOn(!!data?.allowSms))
+      .catch(() => setTextRemindersOn(null));
+  }, [person.id, showTextReminders]);
+
+  // Reminder texts are opt-in per person; staff who can send texts turn them on here (ChurchAppsSupport#1600).
+  const toggleTextReminders = async () => {
+    setTextRemindersError(false);
+    try {
+      const data: { allowSms?: boolean } = await ApiHelper.post(`/notificationpreferences/person/${person.id}/sms`, { allowSms: !textRemindersOn }, "MessagingApi");
+      setTextRemindersOn(!!data?.allowSms);
+    } catch {
+      setTextRemindersError(true);
+    }
+  };
+
   const facts = useMemo(() => {
     const list: string[] = [];
     if (person.birthDate) list.push(`${PersonHelper.getAge(new Date(person.birthDate))}`);
@@ -109,6 +138,12 @@ export const PersonIdentity: React.FC<Props> = (props) => {
   const addressLines = [contact.address1, contact.address2, [contact.city, contact.state].filter(Boolean).join(", ") + (contact.zip ? " " + contact.zip : "")]
     .map((l) => (l || "").trim())
     .filter(Boolean);
+
+  const emailStatus = useQuery<{ bounced?: boolean; address?: string }>({
+    queryKey: [`/deliverylogs/person/${person.id}/emailStatus`, "MessagingApi"],
+    enabled: !!person.id && !!contact.email && canViewPeople
+  });
+  const emailBounced = !!emailStatus.data?.bounced && (emailStatus.data.address || "").trim().toLowerCase() === (contact.email || "").trim().toLowerCase();
 
   const canSendText = !!contact.mobilePhone && canText && hasTextingProvider;
   const editing = props.view === "edit";
@@ -142,7 +177,7 @@ export const PersonIdentity: React.FC<Props> = (props) => {
       <Typography id="page-header-title" variant="h1" component="h1" sx={{ mt: 2, overflowWrap: "anywhere" }}>{person.name?.display}</Typography>
       {facts && <Typography variant="body1" color="text.secondary" sx={{ mt: 0.5 }}>{facts}</Typography>}
 
-      {(person.membershipStatus || userEmail || person.nametagNotes || person.optedOut || flagFields.length > 0) && (
+      {(person.membershipStatus || userEmail || person.nametagNotes || person.optedOut || smsOptedOut || flagFields.length > 0) && (
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 2 }}>
           {person.membershipStatus && <StatusChip status={person.membershipStatus} />}
           {flagFields.map((x) => {
@@ -163,22 +198,40 @@ export const PersonIdentity: React.FC<Props> = (props) => {
           )}
           {userEmail && <Pill>{Locale.label("people.personBanner.hasLogin")}</Pill>}
           {person.optedOut && <Pill>{Locale.label("people.personRecord.noDirectory", "Hidden from directory")}</Pill>}
+          {smsOptedOut && <Pill data-testid="person-sms-opted-out">{Locale.label("people.personRecord.noTexts", "Opted out of texts")}</Pill>}
         </Stack>
       )}
 
       {(contact.email || phones.length > 0 || addressLines.length > 0 || userEmail || person.donorNumber || detailFields.length > 0) && (
         <Stack spacing={1} sx={{ mt: 2 }} data-testid="person-contact">
           {contact.mobilePhone && (
-            <Link href={"tel:" + contact.mobilePhone.replace(/[^0-9+]/g, "")} underline="hover" sx={{ typography: "h3", fontWeight: 600, color: "text.primary", width: "fit-content" }} aria-label={`${Locale.label("people.personView.mobile")} ${formattedPhoneNumber(contact.mobilePhone)}`}>
-              {formattedPhoneNumber(contact.mobilePhone)}
+            <Link href={"tel:" + contact.mobilePhone.replace(/[^0-9+]/g, "")} underline="hover" sx={{ typography: "h3", fontWeight: 600, color: "text.primary", width: "fit-content" }} aria-label={`${Locale.label("people.personView.mobile")} ${formattedPhoneNumber(contact.mobilePhone, localPhones)}`}>
+              {formattedPhoneNumber(contact.mobilePhone, localPhones)}
             </Link>
+          )}
+          {showTextReminders && textRemindersOn !== null && (
+            <Typography sx={quiet} data-testid="person-text-reminders">
+              {Locale.label("people.personRecord.textReminders", "Text reminders")} <Box component="span" sx={strong}>{Locale.label(textRemindersOn ? "people.personRecord.textRemindersOn" : "people.personRecord.textRemindersOff")}</Box>
+              {" · "}
+              <TextAction small onClick={toggleTextReminders}>{Locale.label(textRemindersOn ? "people.personRecord.turnOff" : "people.personRecord.turnOn")}</TextAction>
+              {textRemindersError && <Box component="span" sx={{ color: "error.main", ml: 1 }}>{Locale.label("common.saveError")}</Box>}
+            </Typography>
           )}
           {phones.filter((p) => p.key !== "mobile").map((p) => (
             <Typography key={p.key} sx={quiet}>
-              {p.label} <CopyableText text={p.value || ""}><Box component="span" sx={strong}>{formattedPhoneNumber(p.value || "")}</Box></CopyableText>
+              {p.label} <CopyableText text={p.value || ""}><Box component="span" sx={strong}>{formattedPhoneNumber(p.value || "", localPhones)}</Box></CopyableText>
             </Typography>
           ))}
-          {contact.email && <Typography sx={quiet}><Link href={"mailto:" + contact.email} sx={{ color: "var(--b1-link)" }}>{contact.email}</Link></Typography>}
+          {contact.email && (
+            <Typography sx={quiet}>
+              <Link href={"mailto:" + contact.email} sx={{ color: "var(--b1-link)" }}>{contact.email}</Link>
+              {emailBounced && (
+                <Tooltip title={Locale.label("people.personRecord.emailBounced")}>
+                  <BouncedIcon role="img" aria-label={Locale.label("people.personRecord.emailBounced")} data-testid="person-email-bounced" sx={{ fontSize: 16, color: "warning.main", ml: 0.5, verticalAlign: "text-bottom" }} />
+                </Tooltip>
+              )}
+            </Typography>
+          )}
           {addressLines.length > 0 && (
             <Typography sx={quiet}>
               <CopyableText text={addressLines.join(", ")}>
@@ -194,9 +247,9 @@ export const PersonIdentity: React.FC<Props> = (props) => {
         </Stack>
       )}
 
-      {(person as any).dateAdded && (
+      {person.dateAdded && (
         <Typography sx={{ ...quiet, mt: 2 }} data-testid="person-date-added">
-          {Locale.label("people.personView.dateAdded").replace("{date}", DateHelper.prettyDate(new Date((person as any).dateAdded)))}
+          {Locale.label("people.personView.dateAdded").replace("{date}", DateHelper.prettyDate(new Date(person.dateAdded)))}
         </Typography>
       )}
 

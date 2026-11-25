@@ -14,6 +14,7 @@ import {
 import { ApiHelper, Locale } from "@churchapps/apphelper";
 import { RecordHeading, TextAction } from "../../../components/ui";
 import { useTextingEnabled } from "../../../hooks";
+import { sentNowText, type SendNowResult } from "../../../helpers/ReminderSendNowHelper";
 
 interface ReminderDefinition {
   id?: string;
@@ -51,6 +52,9 @@ export const TaskReminderEdit = ({ taskId, dueDate }: Props) => {
   const [saved, setSaved] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
   const [open, setOpen] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sentResult, setSentResult] = useState<SendNowResult | null>(null);
+  const [sendFailed, setSendFailed] = useState(false);
 
   useEffect(() => {
     if (!taskId) return;
@@ -94,6 +98,20 @@ export const TaskReminderEdit = ({ taskId, dueDate }: Props) => {
     }
   };
 
+  const handleSendNow = async () => {
+    setSentResult(null);
+    setSendFailed(false);
+    setSending(true);
+    try {
+      const result: SendNowResult = await ApiHelper.post("/reminders/task/" + taskId + "/sendNow", {}, "MessagingApi");
+      setSentResult(result || {});
+    } catch {
+      setSendFailed(true);
+    } finally {
+      setSending(false);
+    }
+  };
+
   const l = (k: string) => Locale.label("tasks.reminders." + k);
   const textingEnabled = useTextingEnabled();
 
@@ -113,7 +131,7 @@ export const TaskReminderEdit = ({ taskId, dueDate }: Props) => {
         <Stack spacing={2}>
           {enabled && !dueDate && <Alert severity="warning">{l("noDueDate")}</Alert>}
           <FormControlLabel
-            control={<Switch checked={enabled} onChange={(e) => { setEnabled(e.target.checked); setSaved(false); }} data-testid="task-reminder-enabled-toggle" />}
+            control={<Switch checked={enabled} onChange={(e) => { setEnabled(e.target.checked); setSaved(false); setSentResult(null); }} data-testid="task-reminder-enabled-toggle" />}
             label={l("enable")}
           />
           {enabled && (
@@ -162,12 +180,17 @@ export const TaskReminderEdit = ({ taskId, dueDate }: Props) => {
               </Box>
             </>
           )}
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+          <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 1.5 }}>
             <Button variant="contained" size="small" onClick={handleSave} disabled={saving || (enabled && (offsets.length === 0 || channels.length === 0))} data-testid="task-reminder-save-button">
               {saving ? Locale.label("common.saving") : l("save")}
             </Button>
             {saved && <Typography variant="body2" color="success.main">{l("saved")}</Typography>}
             {saveFailed && <Typography variant="body2" color="error">{Locale.label("common.saveError")}</Typography>}
+            <Button variant="outlined" size="small" onClick={handleSendNow} disabled={sending || saving || !defId || !enabled} data-testid="task-reminder-send-now-button">
+              {sending ? Locale.label("common.saving") : l("sendNow")}
+            </Button>
+            {sentResult && <Typography variant="body2" color="success.main" data-testid="task-reminder-sent-now">{sentNowText(sentResult, channels.includes("sms"), l)}</Typography>}
+            {sendFailed && <Typography variant="body2" color="error">{Locale.label("common.saveError")}</Typography>}
           </Box>
         </Stack>
       )}

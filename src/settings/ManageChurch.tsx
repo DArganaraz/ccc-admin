@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { type ChurchInterface } from "@churchapps/helpers";
+import { type CampusInterface, type ChurchInterface, type DomainInterface, type GenericSettingInterface, type TextingProviderInterface } from "@churchapps/helpers";
+import { type PaymentGatewaysInterface, type PersonFieldInterface } from "../helpers/Interfaces";
+import { type StorageProviderInterface } from "./components/StorageSettingsEdit";
 import { UserHelper, Permissions, Locale, ApiHelper, Loading, DateHelper } from "@churchapps/apphelper";
 import { useLocation, Link as RouterLink } from "react-router-dom";
 import { PermissionDenied } from "../components";
@@ -25,6 +27,7 @@ import { CheckinSettingsEdit } from "./components/CheckinSettingsEdit";
 import { VolunteerSignupSettingsEdit } from "./components/VolunteerSignupSettingsEdit";
 import { GivingPrivacySettingsEdit } from "./components/GivingPrivacySettingsEdit";
 import { RegionSettingsEdit, regionName, regionSample } from "./components/RegionSettingsEdit";
+import { WorshipDayHelper, weekdayName } from "../helpers/WorshipDayHelper";
 
 const SECTION_KEYS = [
   "church-info", "general", "region", "giving", "texting", "storage", "domains", "grade-promotion", "check-ins", "volunteer-signup", "giving-privacy", "campuses", "custom-fields", "developer"
@@ -48,13 +51,13 @@ export const ManageChurch = () => {
     queryKey: [`/churches/${churchId}?include=permissions`, "MembershipApi"],
     enabled: !!churchId
   });
-  const settingsQ = useQuery<any[]>({ queryKey: ["/settings", "MembershipApi"], placeholderData: [], enabled: hasAccess });
-  const gateways = useQuery<any[]>({ queryKey: ["/gateways", "GivingApi"], placeholderData: [], enabled: hasGiving });
-  const texting = useQuery<any[]>({ queryKey: ["/texting/providers", "MessagingApi"], placeholderData: [], enabled: hasAccess });
-  const storage = useQuery<any[]>({ queryKey: ["/storage/providers", "ContentApi"], placeholderData: [], enabled: hasAccess });
-  const domains = useQuery<any[]>({ queryKey: ["/domains", "MembershipApi"], placeholderData: [], enabled: hasAccess });
-  const campuses = useQuery<any[]>({ queryKey: ["/campuses", "MembershipApi"], placeholderData: [], enabled: hasAccess });
-  const personFields = useQuery<any[]>({ queryKey: ["/personfields", "MembershipApi"], placeholderData: [], enabled: hasAccess });
+  const settingsQ = useQuery<GenericSettingInterface[]>({ queryKey: ["/settings", "MembershipApi"], placeholderData: [], enabled: hasAccess });
+  const gateways = useQuery<PaymentGatewaysInterface[]>({ queryKey: ["/gateways", "GivingApi"], placeholderData: [], enabled: hasGiving });
+  const texting = useQuery<TextingProviderInterface[]>({ queryKey: ["/texting/providers", "MessagingApi"], placeholderData: [], enabled: hasAccess });
+  const storage = useQuery<StorageProviderInterface[]>({ queryKey: ["/storage/providers", "ContentApi"], placeholderData: [], enabled: hasAccess });
+  const domains = useQuery<DomainInterface[]>({ queryKey: ["/domains", "MembershipApi"], placeholderData: [], enabled: hasAccess });
+  const campuses = useQuery<CampusInterface[]>({ queryKey: ["/campuses", "MembershipApi"], placeholderData: [], enabled: hasAccess });
+  const personFields = useQuery<PersonFieldInterface[]>({ queryKey: ["/personfields", "MembershipApi"], placeholderData: [], enabled: hasAccess });
 
   useEffect(() => {
     if (!hash || church.isLoading) return;
@@ -84,7 +87,8 @@ export const ManageChurch = () => {
   const supportContact = (settingsQ.data || []).find((s) => s.keyName === "supportContact")?.value;
   const region = DateHelper.normalizeLocale((settingsQ.data || []).find((s) => s.keyName === "region")?.value);
   const localPhones = (settingsQ.data || []).find((s) => s.keyName === "phoneFormat")?.value === "local";
-  const regionSubtitle = regionName(region) + (localPhones ? " · " + Locale.label("settings.landing.phoneLocalSubtitle") : "");
+  const worshipDay = WorshipDayHelper.parse((settingsQ.data || []).find((s) => s.keyName === "worshipDay")?.value);
+  const regionSubtitle = regionName(region) + (localPhones ? " · " + Locale.label("settings.landing.phoneLocalSubtitle") : "") + (worshipDay !== 0 ? " · " + weekdayName(worshipDay) : "");
   const gateway = (gateways.data || [])[0];
   const textingProvider = (texting.data || [])[0]?.provider;
   const domainList = domains.data || [];
@@ -130,7 +134,7 @@ export const ManageChurch = () => {
   const textingSubtitle = textingName || Locale.label("settings.landing.notConfigured");
   const storageProviderName = (storage.data || []).find((p) => p.enabled)?.provider;
   const storageNames: Record<string, string> = { ministrystuff: "MinistryStuff", googledrive: "Google Drive", dropbox: "Dropbox", onedrive: "OneDrive", s3: "S3" };
-  const storageSubtitle = storageNames[storageProviderName] || Locale.label("settings.storageSettingsEdit.churchAppsFree");
+  const storageSubtitle = (storageProviderName && storageNames[storageProviderName]) || Locale.label("settings.storageSettingsEdit.churchAppsFree");
 
   const sections: ConfigSection[] = [
     { key: "church-info", title: Locale.label("settings.churchSettingsEdit.churchInfo"), subtitle: church.data.name || Locale.label("settings.churchSettingsEdit.churchInfoSubtitle"), icon: <BusinessIcon />, color: "primary", status: "ok" },
@@ -194,6 +198,7 @@ export const ManageChurch = () => {
                 <SettingsRow label={Locale.label("settings.regionSettingsEdit.region")} value={regionName(region)} />
                 <SettingsRow label={Locale.label("settings.regionSettingsEdit.dateFormat")} value={regionSample(region)} />
                 <SettingsRow label={Locale.label("settings.regionSettingsEdit.phoneFormat")} value={Locale.label(localPhones ? "settings.landing.phoneLocalSubtitle" : "settings.regionSettingsEdit.phoneInternational")} />
+                <SettingsRow label={Locale.label("settings.regionSettingsEdit.worshipDay", "Worship day")} value={weekdayName(worshipDay)} />
               </Box>
             )}
             renderEdit={(saveTrigger, onSaveComplete) => <RegionSettingsEdit churchId={churchId} saveTrigger={saveTrigger} onSaveComplete={onSaveComplete} />}

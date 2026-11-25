@@ -1,43 +1,48 @@
 import { useState, useEffect, useCallback } from "react";
 import { ApiHelper, UserHelper, Loading, Locale, DateHelper } from "@churchapps/apphelper";
-import { Permissions, type CuratedCalendarInterface, type EventInterface, type PersonInterface } from "@churchapps/helpers";
+import { Permissions, type CuratedCalendarInterface, type IApiPermission, type PersonInterface } from "@churchapps/helpers";
 import { Link } from "react-router-dom";
 import { Box, Button, Checkbox, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, FormHelperText, MenuItem, Snackbar, Stack, Table, TableBody, TableCell, TableHead, TableRow, TextField, Tooltip, Typography } from "@mui/material";
 import { PermissionDenied } from "../components";
-import { CountChip, PillTabs, StatusBadge, Surface, TextAction, VerbRow, tableScrollSx } from "../components/ui";
+import { AppIconButton, CountChip, PillTabs, StatusBadge, Surface, TextAction, VerbRow, tableScrollSx } from "../components/ui";
+import { SwapHoriz as SwapHorizIcon } from "@mui/icons-material";
 import { useConfirmDelete } from "../hooks";
 import { CalendarChrome } from "./components/CalendarChrome";
 import { EventModal } from "./components/EventModal";
-import { type EventBookingInterface } from "./interfaces";
+import { RequesterDialog } from "./components/RequesterDialog";
+import { type ApprovalEventInterface, type EventBookingInterface } from "./interfaces";
 
-const calendarsAdmin = { api: "ContentApi", contentType: "Calendars", action: "Admin" };
+const calendarsAdmin: IApiPermission = { api: "ContentApi", contentType: "Calendars", action: "Admin" };
 
 export const ApprovalsPage = () => {
   const [bookings, setBookings] = useState<EventBookingInterface[]>([]);
-  const [events, setEvents] = useState<EventInterface[]>([]);
+  const [events, setEvents] = useState<ApprovalEventInterface[]>([]);
   const [loading, setLoading] = useState(true);
   const [showHistory, setShowHistory] = useState(false);
   const [people, setPeople] = useState<Record<string, PersonInterface>>({});
   const [snack, setSnack] = useState("");
   const [approvingId, setApprovingId] = useState("");
   const [editingEventId, setEditingEventId] = useState("");
+  const [requesterEventId, setRequesterEventId] = useState("");
   const [publish, setPublish] = useState(false);
   const [curatedCalendarId, setCuratedCalendarId] = useState("");
   const [curatedCalendars, setCuratedCalendars] = useState<CuratedCalendarInterface[] | null>(null);
+  const [rejecting, setRejecting] = useState<{ kind: "event" | "booking"; id: string } | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
   const { confirm, ConfirmDialogElement } = useConfirmDelete();
 
   const canEditContent = UserHelper.checkAccess(Permissions.contentApi.content.edit);
-  const canResolve = canEditContent || UserHelper.checkAccess(calendarsAdmin as any);
+  const canResolve = canEditContent || UserHelper.checkAccess(calendarsAdmin);
 
   const loadData = useCallback(() => {
     setLoading(true);
     const list = showHistory ? "resolved" : "pending";
-    const requests: Promise<any>[] = [ApiHelper.get("/eventBookings/" + list, "ContentApi")];
+    const requests: Promise<EventBookingInterface[] | ApprovalEventInterface[] | undefined>[] = [ApiHelper.get("/eventBookings/" + list, "ContentApi")];
     if (canResolve) requests.push(ApiHelper.get("/events/" + list, "ContentApi"));
     Promise.all(requests).then(async ([b, e]) => {
-      const rows: EventBookingInterface[] = b || [];
-      const eventRows: EventInterface[] = e || [];
-      const ids = [...new Set([...rows.flatMap((r) => [r.requestedBy, r.resolvedBy]), ...eventRows.map((r: any) => r.requestedBy)].filter(Boolean))];
+      const rows = (b || []) as EventBookingInterface[];
+      const eventRows = (e || []) as ApprovalEventInterface[];
+      const ids = [...new Set([...rows.flatMap((r) => [r.requestedBy, r.resolvedBy]), ...eventRows.flatMap((r) => [r.requestedBy, r.resolvedBy])].filter(Boolean))];
       const found: PersonInterface[] = ids.length > 0 ? await ApiHelper.get("/people/ids?ids=" + ids.join(","), "MembershipApi").catch((): PersonInterface[] => []) : [];
       const map: Record<string, PersonInterface> = {};
       (found || []).forEach((p) => { if (p.id) map[p.id] = p; });
@@ -52,18 +57,24 @@ export const ApprovalsPage = () => {
     loadData();
   }, [loadData]);
 
-  const confirmReject = async (action: "approve" | "reject") =>
-    action !== "reject" || (await confirm(Locale.label("calendars.approvals.confirmReject"), {
-      title: Locale.label("calendars.approvals.rejectTitle"),
-      confirmLabel: Locale.label("calendars.approvals.reject"),
-      destructive: true
-    }));
+  // #1546: Reject takes an optional reason, appended to the requester's notification.
+  const openReject = (kind: "event" | "booking", id: string) => {
+    setRejectReason("");
+    setRejecting({ kind, id });
+  };
+
+  const confirmReject = () => {
+    if (!rejecting) return;
+    const url = (rejecting.kind === "event" ? "/events/" : "/eventBookings/") + rejecting.id + "/reject";
+    setRejecting(null);
+    ApiHelper.post(url, { reason: rejectReason.trim() || undefined }, "ContentApi").then(() => { notifyResolved("reject"); loadData(); });
+  };
 
   const notifyResolved = (action: "approve" | "reject") =>
     setSnack(Locale.label(action === "approve" ? "calendars.approvals.approvedToast" : "calendars.approvals.rejectedToast"));
 
-  const resolveBooking = async (id: string, action: "approve" | "reject") => {
-    if (!(await confirmReject(action))) return;
+  const resolveBooking = (id: string, action: "approve" | "reject") => {
+    if (action === "reject") return openReject("booking", id);
     ApiHelper.post("/eventBookings/" + id + "/" + action, {}, "ContentApi").then(() => { notifyResolved(action); loadData(); });
   };
 
@@ -81,8 +92,8 @@ export const ApprovalsPage = () => {
     ApiHelper.post("/eventBookings/" + id + "/approve", body, "ContentApi").then(() => { notifyResolved("approve"); loadData(); });
   };
 
-  const resolveEvent = async (id: string, action: "approve" | "reject") => {
-    if (!(await confirmReject(action))) return;
+  const resolveEvent = (id: string, action: "approve" | "reject") => {
+    if (action === "reject") return openReject("event", id);
     ApiHelper.post("/events/" + id + "/" + action, {}, "ContentApi").then(() => { notifyResolved(action); loadData(); });
   };
 
@@ -114,11 +125,29 @@ export const ApprovalsPage = () => {
     return <Typography component={Link} to={"/people/" + personId} variant="body2" sx={{ textDecoration: "none", color: "primary.main", fontWeight: 600 }}>{name}</Typography>;
   };
 
+  // #1603: the swap icon moves the whole request (event and its bookings) to another person.
+  const requesterCell = (personId?: string, eventId?: string) => (
+    <TableCell>
+      <Stack direction="row" spacing={0.5} alignItems="center">
+        {personLink(personId)}
+        {eventId && (
+          <AppIconButton
+            className="no-print"
+            label={Locale.label("calendars.approvals.changeRequester")}
+            icon={<SwapHorizIcon />}
+            onClick={() => setRequesterEventId(eventId)}
+            data-testid={`change-requester-${eventId}`}
+          />
+        )}
+      </Stack>
+    </TableCell>
+  );
+
   const decisionBadge = (status?: string) => (status === "approved"
     ? <StatusBadge tone="success">{Locale.label("calendars.approvals.approved")}</StatusBadge>
     : <StatusBadge tone="danger">{Locale.label("calendars.approvals.rejected")}</StatusBadge>);
 
-  const decided = (b: EventBookingInterface) => {
+  const decided = (b: Pick<EventBookingInterface, "resolvedBy" | "resolvedDate">) => {
     const name = b.resolvedBy ? people[b.resolvedBy]?.name?.display : "";
     if (!name || !b.resolvedDate) return "—";
     return <>{name}<Typography variant="caption" color="text.secondary" component="div">{DateHelper.prettyDate(new Date(b.resolvedDate))}</Typography></>;
@@ -167,7 +196,7 @@ export const ApprovalsPage = () => {
                   <TableRow key={b.id} hover>
                     {eventCell(b.eventTitle, b.eventStart)}
                     {roomCell(b)}
-                    <TableCell>{personLink(b.requestedBy)}</TableCell>
+                    {requesterCell(b.requestedBy, b.eventId)}
                     <TableCell>{decisionBadge(b.status)}</TableCell>
                     <TableCell>{decided(b)}</TableCell>
                     <TableCell align="right" className="rowActions">
@@ -196,6 +225,7 @@ export const ApprovalsPage = () => {
                   <TableCell>{Locale.label("calendars.approvals.description")}</TableCell>
                   <TableCell>{Locale.label("calendars.approvals.requestedBy")}</TableCell>
                   <TableCell>{Locale.label("calendars.approvals.status")}</TableCell>
+                  <TableCell>{Locale.label("calendars.approvals.decided")}</TableCell>
                   <TableCell align="right" />
                 </TableRow>
               </TableHead>
@@ -204,11 +234,12 @@ export const ApprovalsPage = () => {
                   <TableRow key={e.id} hover>
                     {eventCell(e.title, e.start)}
                     <TableCell>{e.description}</TableCell>
-                    <TableCell>{personLink((e as any).requestedBy)}</TableCell>
-                    <TableCell>{decisionBadge((e as any).approvalStatus)}</TableCell>
+                    {requesterCell(e.requestedBy, e.id)}
+                    <TableCell>{decisionBadge(e.approvalStatus)}</TableCell>
+                    <TableCell>{decided(e)}</TableCell>
                     <TableCell align="right" className="rowActions">
                       <VerbRow sx={{ justifyContent: "flex-end" }}>
-                        {(e as any).approvalStatus === "approved"
+                        {e.approvalStatus === "approved"
                           ? <TextAction small onClick={() => resolveEvent(e.id || "", "reject")} data-testid={`reject-event-${e.id}`}>{Locale.label("calendars.approvals.reject")}</TextAction>
                           : <TextAction small onClick={() => resolveEvent(e.id || "", "approve")} data-testid={`approve-event-${e.id}`}>{Locale.label("calendars.approvals.approve")}</TextAction>}
                         {eventActions(e.id || "")}
@@ -259,7 +290,7 @@ export const ApprovalsPage = () => {
                         <TableRow key={b.id} hover>
                           {eventCell(b.eventTitle, b.eventStart)}
                           {roomCell(b)}
-                          <TableCell>{personLink(b.requestedBy)}</TableCell>
+                          {requesterCell(b.requestedBy, b.eventId)}
                           <TableCell>
                             {(b.conflicts?.length || 0) > 0 ? (
                               <Tooltip title={<>{(b.conflicts || []).map((c, i) => <div key={i}>{c.message}</div>)}</>}>
@@ -303,7 +334,7 @@ export const ApprovalsPage = () => {
                         <TableRow key={e.id} hover>
                           {eventCell(e.title, e.start)}
                           <TableCell>{e.description}</TableCell>
-                          <TableCell>{personLink((e as any).requestedBy)}</TableCell>
+                          {requesterCell(e.requestedBy, e.id)}
                           <TableCell align="right" className="rowActions">
                             <VerbRow sx={{ justifyContent: "flex-end" }}>
                               <TextAction small onClick={() => resolveEvent(e.id || "", "approve")} data-testid={`approve-event-${e.id}`}>{Locale.label("calendars.approvals.approve")}</TextAction>
@@ -328,6 +359,7 @@ export const ApprovalsPage = () => {
           onDone={(saved) => { setEditingEventId(""); if (saved) loadData(); }}
         />
       )}
+      {requesterEventId && <RequesterDialog eventId={requesterEventId} onClose={() => setRequesterEventId("")} onUpdated={loadData} />}
       <Dialog open={!!approvingId} onClose={() => setApprovingId("")} fullWidth maxWidth="xs" data-testid="approve-booking-dialog">
         <DialogTitle>{Locale.label("calendars.approvals.approveBookingTitle")}</DialogTitle>
         <DialogContent>
@@ -346,6 +378,28 @@ export const ApprovalsPage = () => {
         <DialogActions>
           <Button variant="outlined" onClick={() => setApprovingId("")} data-testid="approve-booking-cancel">{Locale.label("common.cancel")}</Button>
           <Button variant="contained" onClick={approveBooking} data-testid="approve-booking-confirm">{Locale.label("calendars.approvals.approve")}</Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog open={!!rejecting} onClose={() => setRejecting(null)} fullWidth maxWidth="sm" data-testid="reject-request-dialog">
+        <DialogTitle>{Locale.label("calendars.approvals.rejectTitle")}</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 2 }}>{Locale.label("calendars.approvals.confirmReject")}</Typography>
+          <TextField
+            autoFocus
+            fullWidth
+            multiline
+            minRows={3}
+            maxRows={5}
+            label={Locale.label("calendars.approvals.rejectReason")}
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            slotProps={{ htmlInput: { maxLength: 500 } }}
+            data-testid="reject-request-reason"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button variant="outlined" onClick={() => setRejecting(null)} data-testid="reject-request-cancel">{Locale.label("common.cancel")}</Button>
+          <Button variant="contained" color="error" onClick={confirmReject} data-testid="reject-request-confirm">{Locale.label("calendars.approvals.reject")}</Button>
         </DialogActions>
       </Dialog>
       <Snackbar

@@ -3,7 +3,7 @@ import { loggedInTest as test, expect } from "./helpers/test-fixtures";
 import { navigateToRoomsResources, navigateToApprovals, navigateToAvailability, navigateToCalendars } from "./helpers/navigation";
 import { login } from "./helpers/auth";
 import { STORAGE_STATE_PATH } from "./global-setup";
-import { confirmDelete } from "./helpers/fixtures";
+import { confirmDelete, personAddButton, SEED_PEOPLE } from "./helpers/fixtures";
 
 // Rooms & resources admin (roadmap 2.7/2.8): CRUD, double-booking warnings, approval routing, .ics import.
 const HALL = "Zacchaeus Hall";
@@ -397,6 +397,334 @@ test.describe.serial("Rooms, resources & approvals", () => {
   });
 });
 
+// #1593: an inactive room or resource stays in the admin list with a badge but leaves the booking pickers.
+test.describe.serial("Inactive rooms and resources", () => {
+  const ROOM = "Zacchaeus Retired Room";
+  const RESOURCE = "Zacchaeus Retired Van";
+  let page: Page;
+
+  const roomRow = () => page.locator('[data-testid="rooms-table"] tbody tr').filter({ hasText: ROOM });
+  const resourceRow = () => page.locator('[data-testid="resources-table"] tbody tr').filter({ hasText: RESOURCE });
+
+  const openBookingPicker = async (selectTestId: string) => {
+    await navigateToAvailability(page);
+    await page.locator('[data-testid="availability-book-button"]').click();
+    await page.locator(`[data-testid="${selectTestId}"] [role="combobox"]`).first().click();
+    await page.locator('[role="listbox"]').waitFor({ state: "visible", timeout: 10000 });
+  };
+
+  const closeBookingPicker = async () => {
+    await page.keyboard.press("Escape");
+    await page.locator('[role="listbox"]').waitFor({ state: "hidden", timeout: 5000 });
+    await page.locator('[data-testid="new-event-cancel-button"]').click();
+  };
+
+  test.beforeAll(async ({ browser, playwright }) => {
+    const API = process.env.API_BASE || "http://localhost:8084";
+    const request = await playwright.request.newContext();
+    const body = await (await request.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+    const jwt = ((body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches[0]).jwt;
+    const auth = { headers: { Authorization: "Bearer " + jwt } };
+    for (const [path, name] of [["/content/rooms", ROOM], ["/content/resources", RESOURCE]]) {
+      for (const row of ((await (await request.get(`${API}${path}`, auth)).json()) || []).filter((r: any) => r.name === name)) await request.delete(`${API}${path}/${row.id}`, auth);
+    }
+    await request.post(`${API}/content/rooms`, { ...auth, data: [{ name: ROOM, capacity: 12 }] });
+    await request.post(`${API}/content/resources`, { ...auth, data: [{ name: RESOURCE, quantity: 1 }] });
+    await request.dispose();
+    const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+    page = await context.newPage();
+    await login(page);
+  });
+
+  test.afterAll(async () => {
+    await page?.context().close();
+  });
+
+  test("switching a room to Inactive badges it and hides it from the event editor", async () => {
+    await navigateToRoomsResources(page);
+    await roomRow().locator('[data-testid^="edit-room-"]').click();
+    const toggle = page.locator('[data-testid="room-active-toggle"]');
+    await expect(toggle).toContainText("Active");
+    await toggle.click();
+    await expect(toggle).toContainText("Inactive");
+    await page.locator('[data-testid="save-room-button"]').click();
+    await expect(roomRow()).toContainText("Inactive", { timeout: 15000 });
+
+    await openBookingPicker("new-event-rooms-select");
+    await expect(page.getByRole("option", { name: new RegExp(ROOM) })).toHaveCount(0);
+    await closeBookingPicker();
+  });
+
+  test("switching the room back to Active returns it to the event editor", async () => {
+    await navigateToRoomsResources(page);
+    await roomRow().locator('[data-testid^="edit-room-"]').click();
+    await page.locator('[data-testid="room-active-toggle"]').click();
+    await page.locator('[data-testid="save-room-button"]').click();
+    await expect(roomRow()).toBeVisible({ timeout: 15000 });
+    await expect(roomRow()).not.toContainText("Inactive");
+
+    await openBookingPicker("new-event-rooms-select");
+    await expect(page.getByRole("option", { name: new RegExp(ROOM) })).toBeVisible();
+    await closeBookingPicker();
+  });
+
+  test("an inactive resource is badged and hidden from the event editor", async () => {
+    await navigateToRoomsResources(page);
+    await openTab(page, "resources");
+    await resourceRow().locator('[data-testid^="edit-resource-"]').click();
+    await page.locator('[data-testid="resource-active-toggle"]').click();
+    await page.locator('[data-testid="save-resource-button"]').click();
+    await expect(resourceRow()).toContainText("Inactive", { timeout: 15000 });
+
+    await openBookingPicker("new-event-resources-select");
+    await expect(page.getByRole("option", { name: new RegExp(RESOURCE) })).toHaveCount(0);
+    await closeBookingPicker();
+  });
+
+  test("cleanup: deletes the room and resource", async () => {
+    await navigateToRoomsResources(page);
+    await deleteViaEdit(page, roomRow().locator('[data-testid^="edit-room-"]'), "delete-room-button");
+    await expect(roomRow()).toHaveCount(0, { timeout: 15000 });
+    await openTab(page, "resources");
+    await deleteViaEdit(page, resourceRow().locator('[data-testid^="edit-resource-"]'), "delete-resource-button");
+    await expect(resourceRow()).toHaveCount(0, { timeout: 15000 });
+  });
+});
+
+// #1650: an optional Category groups rooms and resources under headings in the booking pickers and filters the list.
+test.describe.serial("Room and resource categories", () => {
+  const WING = "Zacchaeus Wing";
+  const GEAR = "Zacchaeus Gear";
+  const STAGE = "Zacchaeus Category Stage";
+  const CHAPEL = "Zacchaeus Category Chapel";
+  const MIC = "Zacchaeus Category Mic";
+  let page: Page;
+
+  const roomRow = (name: string) => page.locator('[data-testid="rooms-table"] tbody tr').filter({ hasText: name });
+
+  // Text of each row in the open listbox, headings included, in display order.
+  const listboxOrder = async () => page.locator('[role="listbox"] > li').evaluateAll((els) => els.map((el) => ({
+    heading: el.classList.contains("MuiListSubheader-root"),
+    text: (el.textContent || "").trim()
+  })));
+
+  const expectGrouped = async (heading: string, categorized: string, uncategorized: string) => {
+    await page.locator('[role="listbox"]').waitFor({ state: "visible", timeout: 10000 });
+    await expect(page.locator('[role="listbox"] .MuiListSubheader-root').filter({ hasText: heading })).toBeVisible();
+    const rows = await listboxOrder();
+    const h = rows.findIndex((r) => r.heading && r.text === heading);
+    const c = rows.findIndex((r) => !r.heading && r.text.startsWith(categorized));
+    const u = rows.findIndex((r) => !r.heading && r.text.startsWith(uncategorized));
+    expect(h).toBeGreaterThanOrEqual(0);
+    expect(c).toBeGreaterThan(h);
+    // Uncategorized items trail every category with no heading of their own.
+    expect(u).toBeGreaterThan(c);
+    expect(rows.slice(u).some((r) => r.heading)).toBe(false);
+  };
+
+  const closeListbox = async () => {
+    await page.keyboard.press("Escape");
+    await page.locator('[role="listbox"]').waitFor({ state: "hidden", timeout: 5000 });
+  };
+
+  test.beforeAll(async ({ browser, playwright }) => {
+    const API = process.env.API_BASE || "http://localhost:8084";
+    const request = await playwright.request.newContext();
+    const body = await (await request.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+    const jwt = ((body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches[0]).jwt;
+    const auth = { headers: { Authorization: "Bearer " + jwt } };
+    for (const [path, names] of [["/content/rooms", [STAGE, CHAPEL]], ["/content/resources", [MIC]]] as const) {
+      for (const row of ((await (await request.get(`${API}${path}`, auth)).json()) || []).filter((r: any) => (names as readonly string[]).includes(r.name))) await request.delete(`${API}${path}/${row.id}`, auth);
+    }
+    await request.post(`${API}/content/rooms`, { ...auth, data: [{ name: STAGE, capacity: 40 }, { name: CHAPEL, capacity: 20 }] });
+    await request.post(`${API}/content/resources`, { ...auth, data: [{ name: MIC, quantity: 1, categoryName: GEAR }] });
+    await request.dispose();
+    const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+    page = await context.newPage();
+    await login(page);
+  });
+
+  test.afterAll(async () => {
+    await page?.context().close();
+  });
+
+  test("a room's category is set in the edit form and listed in the Category column", async () => {
+    await navigateToRoomsResources(page);
+    await roomRow(STAGE).locator('[data-testid^="edit-room-"]').click();
+    await page.locator('[data-testid="room-category-select"]').click();
+    await page.locator('[data-testid="add-new-option"]').click();
+    await page.locator('[data-testid="room-category-input"] input').fill(WING);
+    await page.locator('[data-testid="save-room-button"]').click();
+    await expect(roomRow(STAGE)).toContainText(WING, { timeout: 15000 });
+    await expect(roomRow(CHAPEL)).not.toContainText(WING);
+  });
+
+  test("a category chip filters the Rooms list", async () => {
+    const chip = page.locator('[data-testid="room-category-chip"]').filter({ hasText: WING });
+    await expect(chip).toBeVisible();
+    await chip.click();
+    await expect(roomRow(STAGE)).toBeVisible();
+    await expect(roomRow(CHAPEL)).toHaveCount(0);
+    await chip.click();
+    await expect(roomRow(CHAPEL)).toBeVisible();
+  });
+
+  test("the event editor groups rooms and resources under their category headings", async () => {
+    await navigateToAvailability(page);
+    await page.locator('[data-testid="availability-book-button"]').click();
+    await page.locator('[data-testid="new-event-rooms-select"] [role="combobox"]').first().click();
+    await expectGrouped(WING, STAGE, CHAPEL);
+    await closeListbox();
+    await page.locator('[data-testid="new-event-resources-select"] [role="combobox"]').first().click();
+    await page.locator('[role="listbox"]').waitFor({ state: "visible", timeout: 10000 });
+    await expect(page.locator('[role="listbox"] .MuiListSubheader-root').filter({ hasText: GEAR })).toBeVisible();
+    await closeListbox();
+    await page.locator('[data-testid="new-event-cancel-button"]').click();
+  });
+
+  test("the template editor groups rooms under their category headings", async () => {
+    await navigateToRoomsResources(page);
+    await openTab(page, "templates");
+    await page.locator('[data-testid="add-room-resource"]').click();
+    await page.locator('[data-testid="template-rooms-select"] [role="combobox"]').first().click();
+    await expectGrouped(WING, STAGE, CHAPEL);
+    await closeListbox();
+  });
+
+  test("cleanup: deletes the rooms and resource", async () => {
+    await navigateToRoomsResources(page);
+    for (const name of [STAGE, CHAPEL]) {
+      await deleteViaEdit(page, roomRow(name).locator('[data-testid^="edit-room-"]'), "delete-room-button");
+      await expect(roomRow(name)).toHaveCount(0, { timeout: 15000 });
+    }
+    await openTab(page, "resources");
+    const micRow = page.locator('[data-testid="resources-table"] tbody tr').filter({ hasText: MIC });
+    await deleteViaEdit(page, micRow.locator('[data-testid^="edit-resource-"]'), "delete-resource-button");
+    await expect(micRow).toHaveCount(0, { timeout: 15000 });
+  });
+});
+
+// #1659: the Resources list shows the quantity as entered; a blank quantity stays blank, and clearing one saves.
+test.describe.serial("Resource quantity left blank", () => {
+  const API = process.env.API_BASE || "http://localhost:8084";
+  const stamp = Date.now();
+  const BLANK = `Zacchaeus Podium ${stamp}`;
+  const COUNTED = `Zacchaeus Music Stands ${stamp}`;
+  let page: Page;
+  let auth: { headers: { Authorization: string } };
+  let blankId = "";
+  let countedId = "";
+
+  // Name, Category, Quantity: the quantity is the third cell.
+  const quantityCell = (name: string) => page.locator('[data-testid="resources-table"] tbody tr').filter({ hasText: name }).locator("td").nth(2);
+
+  test.beforeAll(async ({ browser, playwright }) => {
+    const request = await playwright.request.newContext();
+    const body = await (await request.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+    const jwt = ((body.userChurches || []).find((c: { church?: { id?: string } }) => c.church?.id === "CHU00000001") || body.userChurches[0]).jwt;
+    auth = { headers: { Authorization: "Bearer " + jwt } };
+    const saved = await (await request.post(`${API}/content/resources`, { ...auth, data: [{ name: BLANK }, { name: COUNTED, quantity: 5 }] })).json();
+    blankId = saved[0].id;
+    countedId = saved[1].id;
+    await request.dispose();
+    const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+    page = await context.newPage();
+    await login(page);
+  });
+
+  test.afterAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext();
+    for (const id of [blankId, countedId]) if (id) await request.delete(`${API}/content/resources/${id}`, auth).catch(() => { });
+    await request.dispose();
+    await page?.context().close();
+  });
+
+  test("a resource saved without a quantity lists a blank quantity", async () => {
+    await navigateToRoomsResources(page);
+    await openTab(page, "resources");
+    await expect(quantityCell(COUNTED)).toHaveText("5", { timeout: 15000 });
+    await expect(quantityCell(BLANK)).toHaveText("");
+  });
+
+  test("clearing a resource's quantity saves it blank", async () => {
+    await page.locator(`[data-testid="edit-resource-${countedId}"]`).click();
+    const input = page.locator('[data-testid="resource-quantity-input"] input');
+    await expect(input).toHaveValue("5");
+    await input.fill("");
+    await page.locator('[data-testid="save-resource-button"]').click();
+    await expect(quantityCell(COUNTED)).toHaveText("", { timeout: 15000 });
+    await page.reload();
+    await openTab(page, "resources");
+    await expect(quantityCell(COUNTED)).toHaveText("", { timeout: 15000 });
+    await page.locator(`[data-testid="edit-resource-${countedId}"]`).click();
+    await expect(page.locator('[data-testid="resource-quantity-input"] input')).toHaveValue("");
+  });
+});
+
+// #1652: an event books part of a pooled resource (4 of 10 chairs) instead of the whole stock.
+test.describe.serial("Booking a quantity of a resource", () => {
+  const API = process.env.API_BASE || "http://localhost:8084";
+  const stamp = Date.now();
+  const CHAIRS = `Zacchaeus Folding Chairs ${stamp}`;
+  const EASEL = `Zacchaeus Easel ${stamp}`;
+  const TITLE = `Zacchaeus Chair Event ${stamp}`;
+  let page: Page;
+  let auth: { headers: { Authorization: string } };
+  let chairsId = "";
+  let easelId = "";
+  let eventId = "";
+
+  test.beforeAll(async ({ browser, playwright }) => {
+    const request = await playwright.request.newContext();
+    const body = await (await request.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+    const jwt = ((body.userChurches || []).find((c: { church?: { id?: string } }) => c.church?.id === "CHU00000001") || body.userChurches[0]).jwt;
+    auth = { headers: { Authorization: "Bearer " + jwt } };
+    const saved = await (await request.post(`${API}/content/resources`, { ...auth, data: [{ name: CHAIRS, quantity: 10 }, { name: EASEL, quantity: 1 }] })).json();
+    chairsId = saved[0].id;
+    easelId = saved[1].id;
+    await request.dispose();
+    const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+    page = await context.newPage();
+    await login(page);
+  });
+
+  test.afterAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext();
+    if (eventId) await request.delete(`${API}/content/events/${eventId}`, auth).catch(() => { });
+    for (const id of [chairsId, easelId]) if (id) await request.delete(`${API}/content/resources/${id}`, auth).catch(() => { });
+    await request.dispose();
+    await page?.context().close();
+  });
+
+  test("the event editor books the quantity entered for a pooled resource", async () => {
+    await navigateToAvailability(page);
+    await page.locator('[data-testid="availability-book-button"]').click();
+    await selectOption(page, "new-event-group-select", APPROVAL_GROUP);
+    await page.locator('[data-testid="new-event-title-input"] input').fill(TITLE);
+    await page.locator('[data-testid="new-event-start-input"] input').fill(toInput(eventStart));
+    await page.locator('[data-testid="new-event-end-input"] input').fill(toInput(eventEnd));
+    await selectOption(page, "new-event-resources-select", new RegExp(CHAIRS), true);
+    await selectOption(page, "new-event-resources-select", new RegExp(EASEL), true);
+
+    const qty = page.getByTestId("new-event-resource-quantity-" + chairsId);
+    await expect(qty).toHaveValue("1");
+    await expect(page.getByTestId("new-event-resource-quantity-" + easelId)).toHaveCount(0);
+    await qty.fill("4");
+    await expect(qty).toHaveValue("4");
+
+    const posted = page.waitForRequest((req) => req.url().includes("/content/eventBookings") && req.method() === "POST");
+    await page.locator('[data-testid="new-event-save-button"]').click();
+    const bookings: { eventId: string; resourceId?: string; quantity?: number }[] = (await posted).postDataJSON();
+    eventId = bookings[0].eventId;
+    await expect(page.locator('[data-testid="new-event-save-button"]')).toHaveCount(0, { timeout: 15000 });
+
+    const request = page.context().request;
+    const stored: { resourceId?: string; quantity?: number }[] = await (await request.get(`${API}/content/eventBookings/event/${eventId}`, auth)).json();
+    expect(stored.find((b) => b.resourceId === chairsId)?.quantity).toBe(4);
+    expect(stored.find((b) => b.resourceId === easelId)?.quantity).toBe(1);
+  });
+});
+
 // #1488: decided requests stay on the Approvals page under History, linked to the requester.
 test.describe.serial("Approvals history", () => {
   const API = process.env.API_BASE || "http://localhost:8084";
@@ -502,6 +830,7 @@ test.describe.serial("Room approval reset and event request actions", () => {
   let roomId: string;
   let eventId: string;
   let decidedId: string;
+  let deciderName: string;
   let page: Page;
 
   const auth = () => ({ headers: { Authorization: "Bearer " + jwt } });
@@ -518,7 +847,9 @@ test.describe.serial("Room approval reset and event request actions", () => {
   test.beforeAll(async ({ browser, playwright }) => {
     ctx = await playwright.request.newContext();
     const body = await (await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
-    jwt = ((body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches[0]).jwt;
+    const userChurch = (body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches[0];
+    jwt = userChurch.jwt;
+    deciderName = (await (await ctx.get(`${API}/membership/people/${userChurch.person.id}`, auth())).json()).name.display;
     groupId = (await (await ctx.post(`${API}/membership/groups`, { ...auth(), data: [{ name: groupName, categoryName: "Approvals Test", tags: "standard" }] })).json())[0].id;
     roomId = (await (await ctx.post(`${API}/content/rooms`, { ...auth(), data: [{ name: roomName, approvalGroupId: groupId }] })).json())[0].id;
     eventId = await requestEvent(eventTitle, 10);
@@ -559,7 +890,11 @@ test.describe.serial("Room approval reset and event request actions", () => {
     await expect(row).toBeVisible({ timeout: 15000 });
     await row.locator(`[data-testid="edit-event-${eventId}"]`).click();
     await expect(page.locator('[data-testid="new-event-title-input"] input')).toHaveValue(eventTitle, { timeout: 15000 });
-    await page.locator('[data-testid="new-event-cancel-button"]').click();
+    // #1587: member requests have no group; admins can still save edits to them.
+    await page.locator('[data-testid="new-event-title-input"] input').fill(`${eventTitle} Edited`);
+    await expect(page.locator('[data-testid="new-event-save-button"]')).toBeEnabled();
+    await page.locator('[data-testid="new-event-save-button"]').click();
+    await expect(row).toContainText(`${eventTitle} Edited`, { timeout: 15000 });
     await row.locator(`[data-testid="delete-event-${eventId}"]`).click();
     await confirmDelete(page);
     await expect(page.locator('[data-testid="pending-events-table"] tbody tr').filter({ hasText: eventTitle })).toHaveCount(0, { timeout: 15000 });
@@ -577,6 +912,13 @@ test.describe.serial("Room approval reset and event request actions", () => {
     await expect(historyRow.locator(`[data-testid="delete-event-${decidedId}"]`)).toBeVisible();
   });
 
+  // #1508: event requests show who decided them and when, like room and resource bookings.
+  test("History shows who decided an event request", async () => {
+    const decidedCell = page.locator('[data-testid="history-events-table"] tbody tr').filter({ hasText: decidedTitle }).locator("td").nth(4);
+    await expect(decidedCell).not.toHaveText("—", { timeout: 15000 });
+    await expect(decidedCell).toContainText(deciderName);
+  });
+
   // #1510: rejecting a previously approved request takes it back off the public calendar.
   test("a decided event request can be rejected and re-approved from History", async () => {
     const historyRow = () => page.locator('[data-testid="history-events-table"] tbody tr').filter({ hasText: decidedTitle });
@@ -590,6 +932,97 @@ test.describe.serial("Room approval reset and event request actions", () => {
     await expect(historyRow()).toContainText("Approved", { timeout: 15000 });
     await expect(historyRow().locator(`[data-testid="reject-event-${decidedId}"]`)).toBeVisible();
     expect(await visibility()).toBe("public");
+  });
+});
+
+// #1546: an optional reason on Reject is appended to the notification the requester gets.
+test.describe.serial("Reject a request with a reason", () => {
+  const API = process.env.API_BASE || "http://localhost:8084";
+  const stamp = Date.now();
+  const groupName = `Zacchaeus Reason Approvers ${stamp}`;
+  const roomName = `Zacchaeus Reason Room ${stamp}`;
+  const eventTitle = `Zacchaeus Reason Request ${stamp}`;
+  const bookingTitle = `Zacchaeus Reason Booking ${stamp}`;
+  const eventReason = `The sanctuary is closed for repairs ${stamp}.`;
+  const bookingReason = `The room is already promised that night ${stamp}.`;
+  let ctx: APIRequestContext;
+  let jwt: string;
+  let groupId: string;
+  let roomId: string;
+  let eventId: string;
+  let bookingEventId: string;
+  let bookingId: string;
+  let page: Page;
+
+  const auth = () => ({ headers: { Authorization: "Bearer " + jwt } });
+  const myNotifications = async (): Promise<string[]> => ((await (await ctx.get(`${API}/messaging/notifications/my`, auth())).json()) || []).map((n: any) => n.message);
+
+  test.beforeAll(async ({ browser, playwright }) => {
+    ctx = await playwright.request.newContext();
+    const body = await (await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+    jwt = ((body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches[0]).jwt;
+    const start = new Date();
+    start.setDate(start.getDate() + 12);
+    start.setHours(18, 0, 0, 0);
+    const end = new Date(start);
+    end.setHours(19);
+    eventId = (await (await ctx.post(`${API}/content/events/request`, { ...auth(), data: { title: eventTitle, start: start.toISOString(), end: end.toISOString(), allDay: false } })).json()).event.id;
+    groupId = (await (await ctx.post(`${API}/membership/groups`, { ...auth(), data: [{ name: groupName, categoryName: "Approvals Test", tags: "standard" }] })).json())[0].id;
+    roomId = (await (await ctx.post(`${API}/content/rooms`, { ...auth(), data: [{ name: roomName, approvalGroupId: groupId }] })).json())[0].id;
+    bookingEventId = (await (await ctx.post(`${API}/content/events`, { ...auth(), data: [{ groupId, title: bookingTitle, start: start.toISOString(), end: end.toISOString(), allDay: false, visibility: "public" }] })).json())[0].id;
+    const booking = (await (await ctx.post(`${API}/content/eventBookings`, { ...auth(), data: [{ eventId: bookingEventId, roomId }] })).json())[0];
+    expect(booking.status, "seeded booking is pending").toBe("pending");
+    bookingId = booking.id;
+    const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+    page = await context.newPage();
+    await login(page);
+  });
+
+  test.afterAll(async () => {
+    try {
+      await ctx.delete(`${API}/content/events/${eventId}`, auth());
+      await ctx.delete(`${API}/content/events/${bookingEventId}`, auth());
+      await ctx.delete(`${API}/content/rooms/${roomId}`, auth());
+      await ctx.delete(`${API}/membership/groups/${groupId}`, auth());
+    } catch { /* best effort */ }
+    await ctx?.dispose();
+    await page?.context().close();
+  });
+
+  test("Reject asks for an optional reason, and Cancel leaves the request pending", async () => {
+    await navigateToApprovals(page);
+    const row = page.locator('[data-testid="pending-events-table"] tbody tr').filter({ hasText: eventTitle });
+    await expect(row).toBeVisible({ timeout: 15000 });
+    await row.locator(`[data-testid="reject-event-${eventId}"]`).click();
+    const dialog = page.locator('[data-testid="reject-request-dialog"]');
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("Reject Request");
+    await expect(dialog.getByLabel("Reason (optional)")).toBeVisible();
+    await page.locator('[data-testid="reject-request-cancel"]').click();
+    await expect(dialog).toHaveCount(0);
+    await expect(row).toBeVisible();
+  });
+
+  test("rejecting an event request with a reason sends it to the requester", async () => {
+    const row = page.locator('[data-testid="pending-events-table"] tbody tr').filter({ hasText: eventTitle });
+    await row.locator(`[data-testid="reject-event-${eventId}"]`).click();
+    await page.locator('[data-testid="reject-request-reason"] textarea').first().fill(eventReason);
+    await page.locator('[data-testid="reject-request-confirm"]').click();
+    await expect(page.locator('[data-testid="approvals-snackbar"]')).toBeVisible();
+    await expect(page.locator('[data-testid="pending-events-table"] tbody tr').filter({ hasText: eventTitle })).toHaveCount(0, { timeout: 15000 });
+    await expect.poll(myNotifications, { timeout: 15000 }).toContain(`Your event request "${eventTitle}" was rejected: ${eventReason}`);
+  });
+
+  test("rejecting a room booking with a reason sends it to the requester", async () => {
+    const row = page.locator('[data-testid="pending-bookings-table"] tbody tr').filter({ hasText: bookingTitle });
+    await expect(row).toBeVisible({ timeout: 15000 });
+    await row.locator(`[data-testid="reject-booking-${bookingId}"]`).click();
+    await page.locator('[data-testid="reject-request-reason"] textarea').first().fill(bookingReason);
+    await page.locator('[data-testid="reject-request-confirm"]').click();
+    await expect(page.locator('[data-testid="pending-bookings-table"] tbody tr').filter({ hasText: bookingTitle })).toHaveCount(0, { timeout: 15000 });
+    await page.locator('[data-testid="approvals-history-pill"]').click();
+    await expect(page.locator('[data-testid="history-bookings-table"] tbody tr').filter({ hasText: bookingTitle })).toContainText("Rejected", { timeout: 15000 });
+    await expect.poll(myNotifications, { timeout: 15000 }).toContain(`Your request for ${roomName} for "${bookingTitle}" was rejected: ${bookingReason}`);
   });
 });
 
@@ -617,4 +1050,74 @@ test.describe("Availability booking colors", () => {
       expect(contrast(color, background)).toBeGreaterThanOrEqual(4.5);
     });
   }
+});
+
+// #1603: staff enter requests for members who cannot sign in, then move the request to that member.
+test.describe.serial("Change who a request is for", () => {
+  const API = process.env.API_BASE || "http://localhost:8084";
+  const stamp = Date.now();
+  const groupName = `Zacchaeus Requester Approvers ${stamp}`;
+  const roomName = `Zacchaeus Requester Room ${stamp}`;
+  const eventTitle = `Zacchaeus Requester Event ${stamp}`;
+  let ctx: APIRequestContext;
+  let jwt: string;
+  let groupId: string;
+  let roomId: string;
+  let eventId: string;
+  let page: Page;
+
+  const auth = () => ({ headers: { Authorization: "Bearer " + jwt } });
+
+  test.beforeAll(async ({ browser, playwright }) => {
+    ctx = await playwright.request.newContext();
+    const body = await (await ctx.post(`${API}/membership/users/login`, { data: { email: "demo@b1.church", password: "password" } })).json();
+    jwt = ((body.userChurches || []).find((c: any) => c.church?.id === "CHU00000001") || body.userChurches[0]).jwt;
+    // A room routed to a group the admin is not in, so the booking on the request lands as pending.
+    groupId = (await (await ctx.post(`${API}/membership/groups`, { ...auth(), data: [{ name: groupName, categoryName: "Approvals Test", tags: "standard" }] })).json())[0].id;
+    roomId = (await (await ctx.post(`${API}/content/rooms`, { ...auth(), data: [{ name: roomName, approvalGroupId: groupId }] })).json())[0].id;
+    const start = new Date();
+    start.setDate(start.getDate() + 12);
+    start.setHours(18, 0, 0, 0);
+    const end = new Date(start);
+    end.setHours(19);
+    eventId = (await (await ctx.post(`${API}/content/events/request`, { ...auth(), data: { title: eventTitle, start: start.toISOString(), end: end.toISOString(), allDay: false, roomIds: [roomId] } })).json()).event.id;
+    const context = await browser.newContext({ storageState: STORAGE_STATE_PATH });
+    page = await context.newPage();
+    await login(page);
+  });
+
+  test.afterAll(async () => {
+    try {
+      await ctx.delete(`${API}/content/events/${eventId}`, auth());
+      await ctx.delete(`${API}/content/rooms/${roomId}`, auth());
+      await ctx.delete(`${API}/membership/groups/${groupId}`, auth());
+    } catch { /* best effort */ }
+    await ctx?.dispose();
+    await page?.context().close();
+  });
+
+  test("the swap icon beside Requested by moves the request to another person", async () => {
+    await navigateToApprovals(page);
+    const bookingRow = page.locator('[data-testid="pending-bookings-table"] tbody tr').filter({ hasText: eventTitle });
+    const eventRow = page.locator('[data-testid="pending-events-table"] tbody tr').filter({ hasText: eventTitle });
+    await expect(bookingRow).toBeVisible({ timeout: 15000 });
+    await expect(bookingRow).not.toContainText(SEED_PEOPLE.DONALD);
+    await bookingRow.locator(`[data-testid="change-requester-${eventId}"]`).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Change requester");
+    await dialog.locator('[data-testid="person-search-input"] input, input[name="personAddText"]').first().fill(SEED_PEOPLE.DONALD);
+    await dialog.locator('[data-testid="search-button"]').click();
+    await personAddButton(dialog, SEED_PEOPLE.DONALD).click();
+    await expect(dialog).toHaveCount(0, { timeout: 10000 });
+    // The booking and the event request move together.
+    await expect(bookingRow.getByRole("link", { name: SEED_PEOPLE.DONALD })).toBeVisible({ timeout: 15000 });
+    await expect(eventRow.getByRole("link", { name: SEED_PEOPLE.DONALD })).toBeVisible();
+  });
+
+  test("the moved request shows on the new requester's record", async () => {
+    const bookingRow = page.locator('[data-testid="pending-bookings-table"] tbody tr').filter({ hasText: eventTitle });
+    await bookingRow.getByRole("link", { name: SEED_PEOPLE.DONALD }).click();
+    await expect(page).toHaveURL(/\/people\/[\w-]+$/);
+    await expect(page.getByTestId("person-requests-table").locator("tbody tr").filter({ hasText: eventTitle })).toBeVisible({ timeout: 15000 });
+  });
 });

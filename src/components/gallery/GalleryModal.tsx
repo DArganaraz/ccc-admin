@@ -31,9 +31,9 @@ export const GalleryModal: React.FC<Props> = (props: Props) => {
   const contentRoot = props.contentRoot || CommonEnvironmentHelper.ContentRoot;
   const handleClose = () => { if (props.onClose) props.onClose(); else if (props.onCancel) props.onCancel(); };
 
-  const handleTabChange = (_el: any, newValue: any) => { setTabIndex(newValue); };
+  const handleTabChange = (_el: React.SyntheticEvent, newValue: number) => { setTabIndex(newValue); };
 
-  const loadData = () => { ApiHelper.get("/gallery/" + aspectRatio.toString(), "ContentApi").then((data: any) => setImages(data.images)); };
+  const loadData = () => { ApiHelper.get("/gallery/" + aspectRatio.toString(), "ContentApi").then((data: { images: string[] }) => setImages(data.images)); };
 
   const handleImageUpdated = async (dataUrl?: string) => {
 
@@ -53,8 +53,12 @@ export const GalleryModal: React.FC<Props> = (props: Props) => {
       const params = { folder: aspectRatio.toString(), fileName, contentType: blob.type, size: blob.size };
 
       const presigned = await ApiHelper.post("/gallery/requestUpload", params, "ContentApi");
-      if (presigned?.key === undefined) throw new Error("Upload failed - no presigned key received");
-      await FileHelper.postPresignedFile(presigned, file, () => { });
+      if (presigned?.key !== undefined) await FileHelper.postPresignedFile(presigned, file, () => { });
+      else {
+        // Self-hosted installs store files on disk and have no presigned slot; send the image to the API.
+        const uploaded = await ApiHelper.post("/gallery/upload", { folder: params.folder, fileName, contentType: blob.type, fileContents: dataUrl }, "ContentApi");
+        if (uploaded?.key === undefined) throw new Error("Upload failed - no key received");
+      }
 
       setTabIndex(0);
       loadData();
@@ -77,7 +81,7 @@ export const GalleryModal: React.FC<Props> = (props: Props) => {
 
   const getImages = () => {
     const result: React.ReactElement[] = [];
-    images.forEach((img: any, index: number) => {
+    images.forEach((img: string, index: number) => {
       const parts = img.split("/");
 
       result.push(<Grid key={img || index} size={{ xs: 12, md: 4 }}>

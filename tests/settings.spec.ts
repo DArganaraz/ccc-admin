@@ -601,6 +601,23 @@ test.describe.serial("Settings Management", () => {
       await expect(batchDates().first()).toHaveText(MONTH_FIRST, { timeout: 15000 });
     });
 
+    // ChurchAppsSupport#1598: churches pick their main worship day; Sunday until they change it.
+    test("region settings offer a worship day that defaults to Sunday", async () => {
+      await page.goto("/settings#region");
+      await expect(page.locator('[data-testid="settings-section-region"]')).toHaveClass(/Mui-selected/, { timeout: 15000 });
+      const region = page.locator('[data-testid="settings-region"]');
+      await expect(region).toContainText("Worship day");
+      await expect(region).toContainText("Sunday");
+      await region.locator('[data-testid="small-button-edit"]').dispatchEvent("click");
+      const select = page.locator('[data-testid="worship-day-select"]');
+      await expect(select).toHaveText(/Sunday/, { timeout: 10000 });
+      await select.click();
+      await expect(page.locator('[data-testid="worship-day-option-6"]')).toHaveText("Saturday");
+      await page.keyboard.press("Escape");
+      await region.getByRole("button", { name: "Cancel" }).click();
+      await expect(select).toHaveCount(0, { timeout: 10000 });
+    });
+
     const choosePhoneFormat = async (format: "international" | "local") => {
       await page.goto("/settings#region");
       await expect(page.locator('[data-testid="settings-section-region"]')).toHaveClass(/Mui-selected/, { timeout: 15000 });
@@ -975,6 +992,19 @@ test.describe("Email template editor merge fields", () => {
     const preview = page.frameLocator("iframe[title='Email preview']").locator("body");
     await expect(preview).toContainText("Thanks for $50.00 to General Fund");
     await expect(preview.locator("table")).toContainText("Missions");
+  });
+
+  // ChurchAppsSupport#1641: the donor number chip inserts into subject and body and previews a sample number.
+  test("donor number chip inserts and previews a sample number", async ({ page }) => {
+    await openNewTemplate(page);
+    await expect(chipsAfter(page, "Insert merge field into subject:").getByText("Donor Number", { exact: true })).toBeVisible();
+    const body = page.locator(".editor-input[contenteditable='true']").first();
+    await body.click();
+    await page.keyboard.type("Donor #");
+    await chipsAfter(page, "Insert merge field into body:").getByText("Donor Number", { exact: true }).click();
+    await expect(body).toHaveText("Donor #{{donorNumber}}");
+    await page.getByRole("button", { name: "Preview" }).click();
+    await expect(page.frameLocator("iframe[title='Email preview']").locator("body")).toContainText("Donor #1042");
   });
 
   test("backspace in the middle of the body only removes one character", async ({ page }) => {

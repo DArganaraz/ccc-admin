@@ -1,7 +1,7 @@
-import { Chart } from "react-google-charts";
+import { Chart, type GoogleChartWrapper } from "react-google-charts";
 import { Card, CardContent, Typography, useTheme } from "@mui/material";
 import { Locale } from "@churchapps/apphelper";
-import { CHART_PALETTE, getChartTheme } from "./chartTheme";
+import { CHART_PALETTE, getChartTheme, getSelectableChart } from "./chartTheme";
 
 interface AgeGroup {
   group: string;
@@ -22,12 +22,12 @@ export const AgeChart = ({ title, data, onSelect }: Props) => {
   const hasUnassigned = data.some((d) => d.unassigned > 0);
   const total = data.reduce((sum, d) => sum + d.female + d.male + d.unassigned, 0);
 
-  const header: any[] = [Locale.label("people.demographics.age"), Locale.label("people.demographics.female"), Locale.label("people.demographics.male")];
+  const header: string[] = [Locale.label("people.demographics.age"), Locale.label("people.demographics.female"), Locale.label("people.demographics.male")];
   if (hasUnassigned) header.push(Locale.label("people.demographics.unassigned"));
 
-  const chartData: any[] = [header];
+  const chartData: (string | number)[][] = [header];
   data.forEach((d) => {
-    const row: any[] = [d.group, d.female, d.male];
+    const row: (string | number)[] = [d.group, d.female, d.male];
     if (hasUnassigned) row.push(d.unassigned);
     chartData.push(row);
   });
@@ -49,8 +49,8 @@ export const AgeChart = ({ title, data, onSelect }: Props) => {
     ? [
       {
         eventName: "select" as const,
-        callback: ({ chartWrapper }: any) => {
-          const chart = chartWrapper.getChart();
+        callback: ({ chartWrapper }: { chartWrapper: GoogleChartWrapper | null }) => {
+          const chart = getSelectableChart(chartWrapper);
           const selection = chart.getSelection();
           if (selection.length > 0 && selection[0].row != null && selection[0].column != null) {
             const group = data[selection[0].row]?.group;

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, memo, type JSX } from
 import { Link, useNavigate } from "react-router-dom";
 import { B1AdminPersonHelper } from ".";
 import { CreatePerson } from "../../components";
-import { type PersonInterface } from "@churchapps/helpers";
+import { type FormInterface, type FormSubmissionInterface, type PersonInterface, type QuestionInterface } from "@churchapps/helpers";
 import { PersonHelper, Loading, ApiHelper, ArrayHelper, DateHelper, Locale, PersonAvatar } from "@churchapps/apphelper";
 import { Table, TableBody, TableRow, TableCell, Typography, Stack, Box, Checkbox } from "@mui/material";
 import { AppIconButton } from "../../components/ui/AppIconButton";
@@ -10,6 +10,7 @@ import { EmptyState, Pill, SortableTableHead, StatusChip, Surface, type Sortable
 import { useCampuses } from "../../hooks/useCampuses";
 import { useConfirmDelete } from "../../hooks";
 import { formatFieldValue } from "../../helpers/PersonFieldHelper";
+import type { PersonFieldInterface, PersonFieldValueInterface, WithId } from "../../helpers/Interfaces";
 import { Delete as DeleteIcon, Email as EmailIcon, Phone as PhoneIcon } from "@mui/icons-material";
 
 interface Props {
@@ -26,14 +27,37 @@ interface Props {
   showCreatePerson?: boolean;
 }
 
+// The chosen sort is kept across refreshes, like the view and the selected columns.
+const SORT_STORAGE_KEY = "people.sort";
+
+const loadStoredSort = (): { key: string; asc: boolean } | null => {
+  try {
+    const stored = JSON.parse(localStorage.getItem(SORT_STORAGE_KEY) || "null");
+    return stored && typeof stored.key === "string" && typeof stored.asc === "boolean" ? stored : null;
+  } catch { return null; }
+};
+
+// A form question column, or a custom person field column ("personField_" + field id).
+type OptionalColumn = WithId<QuestionInterface> & { personField?: PersonFieldInterface };
+
+const hasGetTime = (v: unknown): v is { getTime: () => number } => typeof (v as { getTime?: unknown } | null | undefined)?.getTime === "function";
+
+const compareValues = (a: unknown, b: unknown): number => {
+  if (hasGetTime(a) && hasGetTime(b)) return a.getTime() - b.getTime();
+  const numA = Number(a);
+  const numB = Number(b);
+  if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+  return String(a).localeCompare(String(b), undefined, { sensitivity: "base", numeric: true });
+};
+
 const PeopleSearchResults = memo(function PeopleSearchResults(props: Props) {
   const { people, columns, selectedColumns } = props;
   const navigate = useNavigate();
 
-  const [sortDirection, setSortDirection] = useState<boolean | null>(null);
-  const [currentSortedCol, setCurrentSortedCol] = useState<string>("");
-  const [optionalColumns, setOptionalColumns] = React.useState<any[]>([]);
-  const [formSubmissions, setFormSubmissions] = React.useState<any[]>([]);
+  const [sortDirection, setSortDirection] = useState<boolean | null>(() => loadStoredSort()?.asc ?? null);
+  const [currentSortedCol, setCurrentSortedCol] = useState<string>(() => loadStoredSort()?.key ?? "");
+  const [optionalColumns, setOptionalColumns] = React.useState<OptionalColumn[]>([]);
+  const [formSubmissions, setFormSubmissions] = React.useState<FormSubmissionInterface[]>([]);
   // Custom person field values by fieldId, then personId.
   const [personFieldValues, setPersonFieldValues] = React.useState<Record<string, Record<string, string>>>({});
   const { confirm, ConfirmDialogElement } = useConfirmDelete();
@@ -75,7 +99,7 @@ const PeopleSearchResults = memo(function PeopleSearchResults(props: Props) {
       if (questionId.startsWith("personField_")) return personFieldValues[questionId.substring(12)]?.[personId] || "";
       for (const fs of formSubmissions) {
         if (fs.contentId === personId) {
-          const answer = ArrayHelper.getOne(fs.answers, "questionId", questionId);
+          const answer = ArrayHelper.getOne(fs.answers || [], "questionId", questionId);
           if (answer) return answer.value || "";
         }
       }
@@ -173,14 +197,17 @@ const PeopleSearchResults = memo(function PeopleSearchResults(props: Props) {
           );
           break;
         case "gender": result = <>{p.gender}</>; break;
+        case "grade": result = <>{p.grade}</>; break;
+        case "school": result = <>{p.school}</>; break;
         case "membershipStatus":
           result = <StatusChip status={p.membershipStatus || "Unknown"} />;
           break;
+        case "donorNumber": result = <>{p.donorNumber}</>; break;
         case "maritalStatus": result = <>{p.maritalStatus}</>; break;
         case "campus": result = <>{p.campusId ? (campusMap[p.campusId] || "") : ""}</>; break;
         case "anniversary": result = <>{p.anniversary == null ? "" : B1AdminPersonHelper.getDateStringFromDate(new Date(p.anniversary))}</>; break;
         case "nametagNotes": result = <>{p.nametagNotes}</>; break;
-        case "dateAdded": result = <>{(p as any).dateAdded ? DateHelper.prettyDate(new Date((p as any).dateAdded)) : ""}</>; break;
+        case "dateAdded": result = <>{p.dateAdded ? DateHelper.prettyDate(new Date(p.dateAdded)) : ""}</>; break;
         case "deleteOption":
           result = (
             <AppIconButton
@@ -226,18 +253,18 @@ const PeopleSearchResults = memo(function PeopleSearchResults(props: Props) {
   );
 
   useEffect(() => {
-    ApiHelper.get("/forms?contentType=person", "MembershipApi").then((data: any) => {
+    ApiHelper.get("/forms?contentType=person", "MembershipApi").then((data: FormInterface[]) => {
       if (data.length > 0) {
-        const personForms = data.filter((f: any) => f.contentType === "person");
+        const personForms = data.filter((f) => f.contentType === "person");
         if (personForms.length > 0) {
-          personForms.forEach((f: any) => {
-            ApiHelper.get("/questions?formId=" + f.id, "MembershipApi").then((q: any) => setOptionalColumns((prevState) => [...prevState, ...q]));
+          personForms.forEach((f) => {
+            ApiHelper.get("/questions?formId=" + f.id, "MembershipApi").then((q: WithId<QuestionInterface>[]) => setOptionalColumns((prevState) => [...prevState, ...q]));
           });
         }
       }
     });
     ApiHelper.get("/personfields", "MembershipApi")
-      .then((fields: any) => setOptionalColumns((prevState) => [...prevState, ...(fields || []).map((f: any) => ({ id: "personField_" + f.id, title: f.name, personField: f }))]))
+      .then((fields: PersonFieldInterface[] | null) => setOptionalColumns((prevState) => [...prevState, ...(fields || []).map((f) => ({ id: "personField_" + f.id, title: f.name, personField: f }))]))
       .catch(() => { });
   }, []);
 
@@ -246,7 +273,7 @@ const PeopleSearchResults = memo(function PeopleSearchResults(props: Props) {
     optionalColumns.forEach((c) => {
       if (selectedColumns.indexOf(c.id) === -1 || !c.formId || loadedSubmissionFormIds.current.has(c.formId)) return;
       loadedSubmissionFormIds.current.add(c.formId);
-      ApiHelper.get(`/formsubmissions/formId/${c.formId}/?include=questions,answers`, "MembershipApi").then((fs: any) => setFormSubmissions((prevState) => [...prevState, ...(fs || [])]));
+      ApiHelper.get(`/formsubmissions/formId/${c.formId}/?include=questions,answers`, "MembershipApi").then((fs: FormSubmissionInterface[] | null) => setFormSubmissions((prevState) => [...prevState, ...(fs || [])]));
     });
   }, [optionalColumns, selectedColumns]);
 
@@ -256,24 +283,39 @@ const PeopleSearchResults = memo(function PeopleSearchResults(props: Props) {
       const fieldId = c.personField?.id;
       if (!fieldId || selectedColumns.indexOf(c.id) === -1 || loadedPersonFieldIds.current.has(fieldId)) return;
       loadedPersonFieldIds.current.add(fieldId);
-      ApiHelper.get("/personfieldvalues/field/" + fieldId, "MembershipApi").then((values: any) => {
+      ApiHelper.get("/personfieldvalues/field/" + fieldId, "MembershipApi").then((values: PersonFieldValueInterface[] | null) => {
         const byPerson: Record<string, string> = {};
-        (values || []).forEach((v: any) => { if (v.personId) byPerson[v.personId] = v.value || ""; });
+        (values || []).forEach((v) => { if (v.personId) byPerson[v.personId] = v.value || ""; });
         setPersonFieldValues((prevState) => ({ ...prevState, [fieldId]: byPerson }));
       }).catch(() => { });
     });
   }, [optionalColumns, selectedColumns]);
 
   // Sort value as shown in the cell: Phone shows the first of mobile/home/work and Campus shows the name.
-  const getSortValue = useCallback((p: any, key: string): any => {
-    if (optionalColumns.some((c) => c.id === key)) return getAnswerValue(p.id, key);
+  const getSortValue = useCallback((p: PersonInterface, key: string): unknown => {
+    if (optionalColumns.some((c) => c.id === key)) return getAnswerValue(p.id as string, key);
     if (key === "phone") return p.contactInfo?.mobilePhone || p.contactInfo?.homePhone || p.contactInfo?.workPhone || "";
     if (key === "campus") return p.campusId ? (campusMap[p.campusId] || "") : "";
-    if (key === "displayName") return p.name?.display || p.displayName || "";
+    if (key === "displayName") return p.name?.display || (p as PersonInterface & { displayName?: string }).displayName || "";
     // Birthday (no year) sorts by month and day; the year is padded out.
-    if (key === "birthDay") return p.birthDate ? new Date(2000, p.birthDate.getMonth(), p.birthDate.getDate()) : null;
-    return p[key];
+    // Search results come through getExpandedPersonObject, which turns birthDate into a Date.
+    const birthDate = p.birthDate as string | Date | undefined;
+    if (key === "birthDay") return birthDate ? new Date(2000, (birthDate as Date).getMonth(), (birthDate as Date).getDate()) : null;
+    return p[key as keyof PersonInterface];
   }, [optionalColumns, getAnswerValue, campusMap]);
+
+  const sortPeople = useCallback((list: PersonInterface[], key: string, asc: boolean) => [...list].sort((a, b) => {
+    const valA = getSortValue(a, key);
+    const valB = getSortValue(b, key);
+    // Blanks always go last, whichever way the column is sorted.
+    const blankA = valA === null || valA === undefined || valA === "";
+    const blankB = valB === null || valB === undefined || valB === "";
+    if (blankA && blankB) return 0;
+    if (blankA) return 1;
+    if (blankB) return -1;
+    const result = compareValues(valA, valB);
+    return asc ? result : -result;
+  }), [getSortValue]);
 
   const sortTableByKey = useCallback(
     (key: string) => {
@@ -281,33 +323,14 @@ const PeopleSearchResults = memo(function PeopleSearchResults(props: Props) {
       const asc = currentSortedCol === key ? !sortDirection : true;
       setCurrentSortedCol(key);
       setSortDirection(asc);
+      try { localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify({ key, asc })); } catch { /* storage unavailable */ }
 
-      const compare = (a: any, b: any): number => {
-        if (typeof a?.getTime === "function" && typeof b?.getTime === "function") return a.getTime() - b.getTime();
-        const numA = Number(a);
-        const numB = Number(b);
-        if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
-        return String(a).localeCompare(String(b), undefined, { sensitivity: "base", numeric: true });
-      };
-
-      const sortedPeople = [...people].sort((a: any, b: any) => {
-        const valA = getSortValue(a, key);
-        const valB = getSortValue(b, key);
-        // Blanks always go last, whichever way the column is sorted.
-        const blankA = valA === null || valA === undefined || valA === "";
-        const blankB = valB === null || valB === undefined || valB === "";
-        if (blankA && blankB) return 0;
-        if (blankA) return 1;
-        if (blankB) return -1;
-        const result = compare(valA, valB);
-        return asc ? result : -result;
-      });
-
+      const sortedPeople = sortPeople(people, key, asc);
       if (props.updateSearchResults) {
         props.updateSearchResults(sortedPeople);
       }
     },
-    [people, props, getSortValue, currentSortedCol, sortDirection]
+    [people, props, sortPeople, currentSortedCol, sortDirection]
   );
 
   const rows = useMemo(() => {
@@ -357,6 +380,15 @@ const PeopleSearchResults = memo(function PeopleSearchResults(props: Props) {
     });
     return result;
   }, [columns, selectedColumns, optionalColumns]);
+
+  // A fresh list (after a refresh or a new search) comes back in the default order, so re-apply the
+  // remembered sort. Sorting is stable, so once the list is in order this hands nothing up.
+  useEffect(() => {
+    if (!currentSortedCol || sortDirection === null || !people?.length || !props.updateSearchResults) return;
+    if (!headColumns.some((c) => c.key === currentSortedCol && c.sortable)) return;
+    const sortedPeople = sortPeople(people, currentSortedCol, sortDirection);
+    if (sortedPeople.some((p, i) => p !== people[i])) props.updateSearchResults(sortedPeople);
+  }, [people, headColumns, sortPeople, currentSortedCol, sortDirection, props.updateSearchResults]);
 
   const headers = useMemo(() => (
     <SortableTableHead

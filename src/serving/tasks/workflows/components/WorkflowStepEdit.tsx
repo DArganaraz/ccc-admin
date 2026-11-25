@@ -49,7 +49,8 @@ export const WorkflowStepEdit = (props: Props) => {
   };
 
   const handleNumber = (name: "expectedResponseDays", value: string) => {
-    setStep({ ...step, [name]: value === "" ? undefined : Number(value) });
+    // null, not undefined: JSON drops undefined keys, so a cleared field would never reach the server.
+    setStep({ ...step, [name]: value === "" ? (null as unknown as number) : Number(value) });
   };
 
   const handleAssign = (contentType: string, contentId: string, label: string) => {
@@ -63,6 +64,7 @@ export const WorkflowStepEdit = (props: Props) => {
       <Stack spacing={2}>
         <Typography variant="h3" component="h2">{Locale.label("tasks.workflowStepEdit.editStep")}</Typography>
         <TextField fullWidth label={Locale.label("tasks.workflowStepEdit.stepName")} value={step?.name || ""} data-testid="step-name-input" onChange={(e) => setStep({ ...step, name: e.target.value })} />
+        <TextField fullWidth multiline minRows={3} label={Locale.label("tasks.workflowStepEdit.instructions")} value={step?.instructions || ""} data-testid="step-instructions-input" onChange={(e) => setStep({ ...step, instructions: e.target.value })} helperText={Locale.label("tasks.workflowStepEdit.instructionsHelp")} />
 
         <TextField fullWidth type="number" label={Locale.label("tasks.workflowStepEdit.dueDays")} value={step?.expectedResponseDays ?? ""} data-testid="step-due-days-input" onChange={(e) => handleNumber("expectedResponseDays", e.target.value)} helperText={Locale.label("tasks.workflowStepEdit.dueDaysHelp")} />
         <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>

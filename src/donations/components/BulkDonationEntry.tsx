@@ -1,14 +1,15 @@
 import { FormControl, InputAdornment, InputLabel, MenuItem, Select, TextField, Box, Typography, Button, type SelectChangeEvent } from "@mui/material";
 import React, { memo, useCallback, useRef, useEffect } from "react";
 import { PersonAdd } from "../../components";
-import { ApiHelper, DateHelper, ErrorMessages, PersonHelper, Locale } from "@churchapps/apphelper";
+import { ApiHelper, DateHelper, ErrorMessages, PersonHelper, Locale, Permissions, UserHelper } from "@churchapps/apphelper";
 import { type DonationInterface, type FundDonationInterface, type FundInterface, type PersonInterface } from "@churchapps/helpers";
 import { AppDatePicker } from "../../components";
 import { Surface } from "../../components/ui";
 
 interface Props {
   batchId: string;
-  batchDate?: Date;
+  batchDate?: string;
+  onDateChange?: (date: string) => void;
   funds: FundInterface[];
   currency?: string;
   updatedFunction: () => void;
@@ -25,11 +26,14 @@ export const BulkDonationEntry = memo((props: Props) => {
   const savingRef = useRef(false);
   const [errors, setErrors] = React.useState<string[]>([]);
   const currency = (props.currency || "usd").toLowerCase();
+  // Offer "Add New Person" only to staff who may create people; the donor search itself needs no more.
+  const canCreatePerson = UserHelper.checkAccess(Permissions.membershipApi.people.edit);
 
   const [defaultValues, setDefaultValues] = React.useState({
-    date: DateHelper.formatHtml5Date(props.batchDate || new Date()),
+    date: props.batchDate || DateHelper.formatHtml5Date(new Date()),
     method: "Check" as string,
     fundId: props.funds?.[0]?.id || "",
+    memo: "",
     notes: ""
   });
 
@@ -50,7 +54,7 @@ export const BulkDonationEntry = memo((props: Props) => {
     handlePersonAdd(null);
   }, [handlePersonAdd]);
 
-  const handleDefaultChange = useCallback((field: string, value: any) => {
+  const handleDefaultChange = useCallback((field: keyof typeof defaultValues, value: string) => {
     setDefaultValues(prev => ({ ...prev, [field]: value }));
   }, []);
 
@@ -66,13 +70,14 @@ export const BulkDonationEntry = memo((props: Props) => {
 
     // The fund row rides with the gift so a Donation trigger sees the fund when it fires.
     const fundDonation: FundDonationInterface = { fundId: defaultValues.fundId, amount: parseFloat(amount), currency };
-    const donation: DonationInterface & { fundDonations: FundDonationInterface[] } = {
+    const donation: DonationInterface & { memo?: string; fundDonations: FundDonationInterface[] } = {
       batchId: props.batchId,
       personId: selectedPerson?.id || "",
       amount: parseFloat(amount),
       donationDate: defaultValues.date,
       method: defaultValues.method,
       methodDetails: methodDetails || undefined,
+      memo: defaultValues.memo || undefined,
       notes: defaultValues.notes || undefined,
       currency,
       fundDonations: [fundDonation]
@@ -119,7 +124,14 @@ export const BulkDonationEntry = memo((props: Props) => {
         <Typography variant="h3" component="h2" sx={{ mb: 2 }}>
           {Locale.label("donations.bulkEntry.selectPerson")}
         </Typography>
-        <PersonAdd getPhotoUrl={PersonHelper.getPhotoUrl} addFunction={handlePersonAdd} inputRef={searchInputRef as React.RefObject<HTMLInputElement>} autoSearch />
+        <PersonAdd
+          getPhotoUrl={PersonHelper.getPhotoUrl}
+          addFunction={handlePersonAdd}
+          onCreate={canCreatePerson ? handlePersonAdd : undefined}
+          showCreatePersonOnNotFound={canCreatePerson}
+          inputRef={searchInputRef as React.RefObject<HTMLInputElement>}
+          autoSearch
+        />
         <Box sx={{ mt: 2 }}>
           <Button variant="text" size="small" onClick={handleAnonymousSelect} data-testid="bulk-donation-anonymous">
             {Locale.label("donations.donationEdit.anon")}
@@ -148,7 +160,7 @@ export const BulkDonationEntry = memo((props: Props) => {
             label={Locale.label("donations.donationEdit.date")}
 
             value={defaultValues.date}
-            onChange={(e) => handleDefaultChange("date", e.target.value)}
+            onChange={(e) => { handleDefaultChange("date", e.target.value); props.onDateChange?.(e.target.value); }}
             onKeyDown={handleKeyDown}
             size="small"
             data-testid="bulk-donation-date"
@@ -183,7 +195,16 @@ export const BulkDonationEntry = memo((props: Props) => {
         </Box>
         <TextField
           fullWidth
-          label={Locale.label("common.notes")}
+          label={Locale.label("donations.donationEdit.memo")}
+          value={defaultValues.memo}
+          onChange={(e) => handleDefaultChange("memo", e.target.value)}
+          onKeyDown={handleKeyDown}
+          size="small"
+          data-testid="bulk-donation-memo"
+        />
+        <TextField
+          fullWidth
+          label={Locale.label("donations.donationEdit.notesInternal")}
           value={defaultValues.notes}
           onChange={(e) => handleDefaultChange("notes", e.target.value)}
           onKeyDown={handleKeyDown}

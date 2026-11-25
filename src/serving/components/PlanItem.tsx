@@ -3,7 +3,7 @@ import { Alert, Menu, MenuItem, Snackbar } from "@mui/material";
 import { FormatListBulleted as FormatListBulletedIcon, MenuBook as MenuBookIcon, MusicNote as MusicNoteIcon } from "@mui/icons-material";
 import { type PlanItemInterface, type PlanItemTimeInterface } from "../../helpers";
 import { DraggableWrapper } from "../../components/DraggableWrapper";
-import { RowDropZone } from "./RowDropZone";
+import { RowDropZone, type PlanItemDragItem } from "./RowDropZone";
 import { type TimeInterface } from "@churchapps/helpers";
 import { ApiHelper, Locale } from "@churchapps/apphelper";
 import { SongDialog } from "./SongDialog";
@@ -120,6 +120,30 @@ export const PlanItem = React.memo((props: Props) => {
     }
   };
 
+  // One-step delete from the row (ChurchAppsSupport#1678); the server removes a section's items with it.
+  const deletingItem = React.useRef(false);
+  const handleDeleteItem = async () => {
+    if (deletingItem.current || !props.planItem.id) return;
+    const name = props.planItem.label || "";
+    const message = isHeader
+      ? (Locale.label("plans.planItem.deleteSectionConfirm") || "Delete the section \"{name}\" and the items in it? This cannot be undone.").replace("{name}", name)
+      : (Locale.label("plans.planItem.deleteItemConfirm") || "Delete \"{name}\"? This cannot be undone.").replace("{name}", name);
+    const confirmed = await confirm(message, {
+      title: isHeader ? (Locale.label("plans.planItem.deleteSection") || "Delete Section") : (Locale.label("plans.planItem.deleteItem") || "Delete Item"),
+      "data-testid": "confirm-delete-item-dialog"
+    });
+    if (!confirmed) return;
+    deletingItem.current = true;
+    try {
+      await ApiHelper.delete("/planItems/" + props.planItem.id, "DoingApi");
+      props.onChange?.();
+    } catch {
+      setErrorMessage(Locale.label("common.saveError"));
+    } finally {
+      deletingItem.current = false;
+    }
+  };
+
   const showCollapse = canCollapse && !props.readOnly;
   const handleCollapseClick = async () => {
     const confirmed = await confirm(Locale.label("plans.lessonDialog.restoreSectionConfirm"), {
@@ -190,7 +214,7 @@ export const PlanItem = React.memo((props: Props) => {
     if (props.onChange) props.onChange();
   };
 
-  const handleDrop = async (data: any, sort: number) => {
+  const handleDrop = async (data: PlanItemDragItem, sort: number) => {
     const pi = { ...data.data } as PlanItemInterface & { runItems?: PlanItemInterface[] };
     // A folded section moves as a block: park the rest of its rows just after the first, then renumber once.
     const rest = (pi.runItems || []).slice(1).map((r, i) => ({ ...r, parentId: props.planItem.id, sort: sort + (i + 1) * 0.001 }));
@@ -300,6 +324,7 @@ export const PlanItem = React.memo((props: Props) => {
       positionLabel={positionLabel}
       onAddClick={(e) => setAnchorEl(e.currentTarget)}
       onEditClick={() => props.setEditPlanItem?.(props.planItem)}
+      onDeleteClick={props.planItem.id ? handleDeleteItem : undefined}
       selectMode={selecting}
       onSelectModeChange={props.readOnly ? undefined : handleSelectModeChange}
       selectedCount={selectedIds.length}
@@ -366,6 +391,7 @@ export const PlanItem = React.memo((props: Props) => {
       onLabelClick={onLabelClick}
       onEditClick={() => props.setEditPlanItem?.(props.planItem)}
       onDuplicateClick={handleDuplicate}
+      onDeleteClick={props.planItem.id && !isFolded ? handleDeleteItem : undefined}
       onSaveDescription={handleSaveDescription}
       onRestoreOriginal={handleRestoreOriginal}
       mediaLookup={props.mediaLookup}
@@ -412,7 +438,7 @@ export const PlanItem = React.memo((props: Props) => {
           <Alert severity="error" onClose={() => setErrorMessage(null)}>{errorMessage}</Alert>
         </Snackbar>
       )}
-      {(showCollapse || (isHeader && !props.readOnly)) && ConfirmDialogElement}
+      {!props.readOnly && ConfirmDialogElement}
       {props.planItem?.itemType === "header" && !props.readOnly && (
         <Menu id="header-menu" anchorEl={anchorEl} open={open} onClose={handleClose}>
           <MenuItem onClick={addSong}>

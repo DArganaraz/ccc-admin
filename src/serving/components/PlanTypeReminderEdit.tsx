@@ -11,7 +11,8 @@ import {
   TextField,
   Checkbox,
   Box,
-  Button
+  Button,
+  Divider
 } from "@mui/material";
 import { ExpandMore } from "@mui/icons-material";
 import { ApiHelper, Locale } from "@churchapps/apphelper";
@@ -23,6 +24,7 @@ interface ReminderDefinition {
   sendLocalTime?: string;
   message?: string;
   channels?: string;
+  recipientMode?: string;
   enabled?: boolean;
 }
 
@@ -38,6 +40,15 @@ const OFFSET_PRESETS = [
   { minutes: 0, label: () => Locale.label("plans.planTypeReminders.dayOf") }
 ] as const;
 const MAX_OFFSETS = 3;
+const MAX_CUSTOM_DAYS = 14;
+// The leader gap alert is a second definition on the same plan type, told apart by this mode.
+const GAP_MODE = "leaderGaps";
+const DEFAULT_GAP_DAYS = 3;
+const PRESET_MINUTES: number[] = OFFSET_PRESETS.map((p) => p.minutes);
+
+const customLabel = (m: number) => (m % 1440 === 0
+  ? Locale.label("plans.planTypeReminders.daysN", "{count} days before").replace("{count}", String(m / 1440))
+  : Locale.label("plans.planTypeReminders.minutesN", "{count} minutes before").replace("{count}", String(m)));
 
 const parseOffsets = (csv: string): number[] =>
   csv ? csv.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n)) : [];
@@ -49,6 +60,10 @@ export const PlanTypeReminderEdit = ({ planTypeId }: Props) => {
   const [sendLocalTime, setSendLocalTime] = useState("09:00");
   const [message, setMessage] = useState("");
   const [channels, setChannels] = useState<string[]>(["push", "email"]);
+  const [customDays, setCustomDays] = useState("");
+  const [gapEnabled, setGapEnabled] = useState(false);
+  const [gapDefId, setGapDefId] = useState<string | undefined>(undefined);
+  const [gapDays, setGapDays] = useState(String(DEFAULT_GAP_DAYS));
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveFailed, setSaveFailed] = useState(false);
@@ -58,7 +73,14 @@ export const PlanTypeReminderEdit = ({ planTypeId }: Props) => {
     if (!planTypeId) return;
     ApiHelper.get("/reminders/scope/plan/" + planTypeId, "MessagingApi")
       .then((defs: ReminderDefinition[]) => {
-        const def = defs?.[0];
+        const gapDef = defs?.find((d) => d.recipientMode === GAP_MODE);
+        if (gapDef) {
+          setGapDefId(gapDef.id);
+          setGapEnabled(gapDef.enabled !== false);
+          const minutes = parseOffsets(gapDef.offsets || "")[0];
+          if (minutes !== undefined) setGapDays(String(Math.round(minutes / 1440)));
+        }
+        const def = defs?.find((d) => d.recipientMode !== GAP_MODE);
         if (!def) return;
         setDefId(def.id);
         setEnabled(def.enabled !== false);
@@ -72,6 +94,18 @@ export const PlanTypeReminderEdit = ({ planTypeId }: Props) => {
 
   const toggleOffset = (m: number) =>
     setOffsets((p) => (p.includes(m) ? p.filter((x) => x !== m) : p.length >= MAX_OFFSETS ? p : [...p, m]));
+  const customValue = customDays.trim() === "" ? NaN : Number(customDays);
+  const customValid = Number.isInteger(customValue) && customValue >= 0 && customValue <= MAX_CUSTOM_DAYS;
+  const canAddCustom = customValid && (offsets.length < MAX_OFFSETS || offsets.includes(customValue * 1440));
+  const addCustom = () => {
+    if (!canAddCustom) return;
+    const m = customValue * 1440;
+    if (!offsets.includes(m)) setOffsets((p) => (p.includes(m) || p.length >= MAX_OFFSETS ? p : [...p, m]));
+    setCustomDays("");
+    setSaved(false);
+  };
+  const gapDaysValue = gapDays.trim() === "" ? NaN : Number(gapDays);
+  const gapDaysValid = Number.isInteger(gapDaysValue) && gapDaysValue >= 0 && gapDaysValue <= MAX_CUSTOM_DAYS;
   const toggleChannel = (c: string) =>
     setChannels((p) => (p.includes(c) ? p.filter((x) => x !== c) : [...p, c]));
 
@@ -87,6 +121,14 @@ export const PlanTypeReminderEdit = ({ planTypeId }: Props) => {
         const body = { offsets: offsets.join(","), sendLocalTime, message: message || undefined, channels, recipientMode: "assignments", enabled: true };
         const savedDef: ReminderDefinition = await ApiHelper.post("/reminders/scope/plan/" + planTypeId, body, "MessagingApi");
         if (savedDef?.id) setDefId(savedDef.id);
+      }
+      if (!gapEnabled && gapDefId) {
+        await ApiHelper.delete("/reminders/" + gapDefId, "MessagingApi");
+        setGapDefId(undefined);
+      } else if (gapEnabled) {
+        const body = { offsets: String(gapDaysValue * 1440), sendLocalTime, channels: ["push", "email"], recipientMode: GAP_MODE, enabled: true };
+        const savedGap: ReminderDefinition = await ApiHelper.post("/reminders/scope/plan/" + planTypeId, body, "MessagingApi");
+        if (savedGap?.id) setGapDefId(savedGap.id);
       }
       setSaved(true);
     } catch {
@@ -123,6 +165,29 @@ export const PlanTypeReminderEdit = ({ planTypeId }: Props) => {
                       data-testid={`plan-type-reminder-offset-${p.minutes}`}
                     />
                   ))}
+                  {offsets.filter((m) => !PRESET_MINUTES.includes(m)).sort((a, b) => b - a).map((m) => (
+                    <Chip
+                      key={m}
+                      label={customLabel(m)}
+                      color="primary"
+                      onDelete={() => toggleOffset(m)}
+                      data-testid={`plan-type-reminder-offset-${m}`}
+                    />
+                  ))}
+                </Stack>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }}>
+                  <Typography variant="body2" color="text.secondary">{Locale.label("plans.planTypeReminders.other")}</Typography>
+                  <TextField
+                    type="number"
+                    size="small"
+                    value={customDays}
+                    onChange={(e) => setCustomDays(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustom(); } }}
+                    inputProps={{ min: 0, max: MAX_CUSTOM_DAYS, "data-testid": "plan-type-reminder-custom-days", "aria-label": Locale.label("plans.planTypeReminders.daysBefore") }}
+                    sx={{ width: 80 }}
+                  />
+                  <Typography variant="body2" color="text.secondary">{Locale.label("plans.planTypeReminders.daysBefore")}</Typography>
+                  <Button size="small" onClick={addCustom} disabled={!canAddCustom} data-testid="plan-type-reminder-custom-add">{Locale.label("plans.planTypeReminders.add")}</Button>
                 </Stack>
               </Box>
               <TextField
@@ -156,8 +221,32 @@ export const PlanTypeReminderEdit = ({ planTypeId }: Props) => {
               </Box>
             </>
           )}
+          <Divider />
+          <Box>
+            <FormControlLabel
+              control={<Switch checked={gapEnabled} onChange={(e) => { setGapEnabled(e.target.checked); setSaved(false); }} data-testid="plan-type-gap-alert-toggle" />}
+              label={Locale.label("plans.planTypeReminders.gapAlert", "Alert ministry leaders about scheduling gaps")}
+            />
+            <Typography variant="body2" color="text.secondary">
+              {Locale.label("plans.planTypeReminders.gapAlertHint", "Leaders of the plan's ministry get one message listing unfilled positions and people who haven't confirmed, with a link to the plan. Nothing is sent when the plan is fully scheduled.")}
+            </Typography>
+            {gapEnabled && (
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 1.5 }}>
+                <TextField
+                  type="number"
+                  size="small"
+                  value={gapDays}
+                  onChange={(e) => { setGapDays(e.target.value); setSaved(false); }}
+                  error={!gapDaysValid}
+                  inputProps={{ min: 0, max: MAX_CUSTOM_DAYS, "data-testid": "plan-type-gap-alert-days", "aria-label": Locale.label("plans.planTypeReminders.daysBefore") }}
+                  sx={{ width: 80 }}
+                />
+                <Typography variant="body2" color="text.secondary">{Locale.label("plans.planTypeReminders.daysBefore")}</Typography>
+              </Stack>
+            )}
+          </Box>
           <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
-            <Button variant="contained" size="small" onClick={handleSave} disabled={saving || (enabled && (offsets.length === 0 || channels.length === 0))} data-testid="plan-type-reminder-save-button">
+            <Button variant="contained" size="small" onClick={handleSave} disabled={saving || (enabled && (offsets.length === 0 || channels.length === 0)) || (gapEnabled && !gapDaysValid)} data-testid="plan-type-reminder-save-button">
               {saving ? Locale.label("common.saving") : Locale.label("plans.planTypeReminders.save")}
             </Button>
             {saved && <Typography variant="body2" color="success.main">{Locale.label("plans.planTypeReminders.saved")}</Typography>}

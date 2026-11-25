@@ -54,7 +54,7 @@ export const PrintDonationReceiptPage = () => {
     return raw ? new Date(raw.split("T")[0] + "T00:00:00") : new Date();
   }, [donation.data?.donationDate]);
 
-  const dataLoaded = !!donation.data && !fundDonations.isPlaceholderData && !funds.isPlaceholderData && (!personId || !!person.data);
+  const dataLoaded = !!donation.data && !fundDonations.isPlaceholderData && !funds.isPlaceholderData && (!personId || !!person.data) && !churchSettings.isPlaceholderData;
 
   useEffect(() => {
     if (autoprint && dataLoaded && printLogo.ready && !hasPrinted.current) {
@@ -80,7 +80,7 @@ export const PrintDonationReceiptPage = () => {
     const method = [d.method, d.methodDetails].filter(Boolean).join(" - ");
     return (fundDonations.data || []).map((fd) => {
       const fund = ArrayHelper.getOne(funds.data || [], "id", fd.fundId);
-      return { date: d.donationDate || "", method, fund: fund?.name, amount: fd.amount || 0, taxDeductible: fund?.taxDeductible !== false };
+      return { date: d.donationDate || "", method, fund: fund?.name, memo: d.memo, amount: fd.amount || 0, taxDeductible: fund?.taxDeductible !== false };
     });
   }, [donation.data, fundDonations.data, funds.data]);
 

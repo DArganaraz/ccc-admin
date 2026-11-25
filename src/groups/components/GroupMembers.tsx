@@ -19,6 +19,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { Link as RouterLink } from "react-router-dom";
 import { canRecordAttendance } from "../../helpers";
+import { withBase } from "../../helpers/basePath";
 import {
   Alert,
   Box,
@@ -289,7 +290,7 @@ export const GroupMembers: React.FC<Props> = memo((props) => {
 
   const openPrint = (extra: string) => {
     setPrintAnchor(null);
-    window.open("/groups/print-roster?groupId=" + props.group.id + "&autoprint=1" + extra, "_blank");
+    window.open(withBase("/groups/print-roster?groupId=" + props.group.id + "&autoprint=1" + extra), "_blank");
   };
 
   const getEditContent = () => (
@@ -313,7 +314,7 @@ export const GroupMembers: React.FC<Props> = memo((props) => {
   const handleSend = async () => {
     const peopleIds = ArrayHelper.getIds(members, "personId");
     const ids = peopleIds.filter((id) => id !== UserHelper.person.id); //remove the one that is sending the message.
-    const data: any = {
+    const data: { peopleIds: string[]; contentType: string; contentId?: string; message: string } = {
       peopleIds: ids,
       contentType: "groupMessage",
       contentId: props.group.id,

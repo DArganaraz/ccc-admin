@@ -112,14 +112,14 @@ export const PagesPage = () => {
   };
 
   const loadData = () => {
-    ApiHelper.get("/links?category=website" + (siteId ? "&siteId=" + siteId : ""), "ContentApi").then((data: any) => {
+    ApiHelper.get("/links?category=website" + (siteId ? "&siteId=" + siteId : ""), "ContentApi").then((data: LinkInterface[]) => {
       setLinks(data);
     });
     // Content editors without the settings permission get a 401 here; still show them the pages.
     ApiHelper.get("/settings", "ContentApi").then((data: GenericSettingInterface[]) => {
-      const loginSetting = data.filter((d: any) => d.keyName === "showLogin");
+      const loginSetting = data.filter((d: GenericSettingInterface) => d.keyName === "showLogin");
       if (loginSetting) setShowLogin(loginSetting[0]);
-      const hideSetting = data.find((d: any) => d.keyName === "hidePublicSite");
+      const hideSetting = data.find((d: GenericSettingInterface) => d.keyName === "hidePublicSite");
       setHidePublicSite(hideSetting);
       loadPageTree(hideSetting?.value === "true");
     }).catch(() => loadPageTree(false));
@@ -127,14 +127,14 @@ export const PagesPage = () => {
 
   const handleSwitchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const setting: GenericSettingInterface = showLogin ? { ...showLogin, value: `${e.target.checked}` } : { keyName: "showLogin", value: `${e.target.checked}`, public: 1 };
-    ApiHelper.post("/settings", [setting], "ContentApi").then((data: any) => {
+    ApiHelper.post("/settings", [setting], "ContentApi").then((data: GenericSettingInterface[]) => {
       setShowLogin(data[0]);
     });
   };
 
   const handleHidePublicSiteChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const setting: GenericSettingInterface = hidePublicSite ? { ...hidePublicSite, value: `${e.target.checked}` } : { keyName: "hidePublicSite", value: `${e.target.checked}`, public: 1 };
-    ApiHelper.post("/settings", [setting], "ContentApi").then((data: any) => {
+    ApiHelper.post("/settings", [setting], "ContentApi").then((data: GenericSettingInterface[]) => {
       setHidePublicSite(data[0]);
       loadPageTree(data[0]?.value === "true");
       // Per-church setting, so bust the church's own subdomain even while editing a secondary site.

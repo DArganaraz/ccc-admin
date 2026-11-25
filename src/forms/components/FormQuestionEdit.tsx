@@ -14,17 +14,18 @@ interface Props {
   updatedFunction: () => void;
 }
 
-type AnyRecord = Record<string, any>;
+// The form starts with choices: null until a question is loaded.
+type QuestionFormValues = Omit<QuestionInterface, "choices"> & { choices?: QuestionInterface["choices"] | null };
 
 export function FormQuestionEdit(props: Props) {
   "use no memo"; // compiler caches register() results, breaking RHF field re-registration after reset()
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const isMounted = useMountedState();
 
-  const { control, register, handleSubmit, reset, watch } = useForm<AnyRecord>({ defaultValues: { title: "", fieldType: "Textbox", placeholder: "", required: false, description: "", choices: null } });
+  const { control, register, handleSubmit, reset, watch } = useForm<QuestionFormValues>({ defaultValues: { title: "", fieldType: "Textbox", placeholder: "", required: false, description: "", choices: null } });
 
   const { errors } = useFormState({ control });
-  const e = errors as any;
+  const e = errors;
   const summaryErrors = useErrorSummary(errors, ["title", "fieldType"]);
   const { confirm, ConfirmDialogElement } = useConfirmDelete();
 
@@ -40,21 +41,24 @@ export function FormQuestionEdit(props: Props) {
     }
   }
 
-  const getChoices = (ft: string) => {
+  const getChoices = (ft: string | undefined) => {
     switch (ft) {
       case "Multiple Choice":
       case "Checkbox":
         return <ChoicesEdit question={watchedQuestion} updatedFunction={(q) => reset(q)} />;
       case "Payment":
         return <PaymentEdit question={watchedQuestion} updatedFunction={(q) => reset(q)} />;
+      case "Heading":
+        return null;
       default:
         return <TextField fullWidth label={Locale.label("forms.formQuestionEdit.plcOp")} id="placeholder" type="text" placeholder={Locale.label("placeholders.form.questionPlaceholder")} {...register("placeholder")} />;
     }
   };
 
-  const onValid = (values: AnyRecord) => {
+  const onValid = (values: QuestionFormValues) => {
     setIsSubmitting(true);
-    ApiHelper.post("/questions/", [values], "MembershipApi")
+    const question = values.fieldType === "Heading" ? { ...values, required: false, placeholder: "", choices: null } : values;
+    ApiHelper.post("/questions/", [question], "MembershipApi")
       .then(() => props.updatedFunction())
       .finally(() => { setIsSubmitting(false); });
   };
@@ -77,6 +81,7 @@ export function FormQuestionEdit(props: Props) {
             <InputLabel id="provider">{Locale.label("forms.formQuestionEdit.fieldType")}</InputLabel>
             <Controller name="fieldType" control={control} render={({ field }) => (
               <Select {...field} value={field.value ?? "Textbox"} labelId="provider" label={Locale.label("forms.formQuestionEdit.fieldType")}>
+                <MenuItem value="Heading">{Locale.label("forms.formQuestionEdit.heading")}</MenuItem>
                 <MenuItem value="Textbox">{Locale.label("forms.formQuestionEdit.textBox")}</MenuItem>
                 <MenuItem value="Whole Number">{Locale.label("forms.formQuestionEdit.wholeNum")}</MenuItem>
                 <MenuItem value="Decimal">{Locale.label("forms.formQuestionEdit.decNum")}</MenuItem>
@@ -96,10 +101,10 @@ export function FormQuestionEdit(props: Props) {
           <TextField fullWidth label={Locale.label("common.title")} id="title" type="text" placeholder={Locale.label("placeholders.form.questionTitle")} data-testid="question-title-input" aria-label={Locale.label("forms.formQuestionEdit.questionTitleAria")} error={!!e.title} helperText={e.title?.message} {...register("title", { required: Locale.label("forms.formQuestionEdit.questionReq") })} />
         </Grid>
       </Grid>
-      <TextField fullWidth label={Locale.label("forms.formQuestionEdit.desc")} id="description" type="text" placeholder={Locale.label("placeholders.form.questionDescription")} data-testid="question-description-input" aria-label={Locale.label("forms.formQuestionEdit.questionDescriptionAria")} {...register("description")} />
+      <TextField fullWidth multiline minRows={2} label={Locale.label("forms.formQuestionEdit.desc")} id="description" placeholder={Locale.label("placeholders.form.questionDescription")} helperText={Locale.label("forms.formQuestionEdit.markdownHelper")} slotProps={{ htmlInput: { maxLength: 255 } }} data-testid="question-description-input" aria-label={Locale.label("forms.formQuestionEdit.questionDescriptionAria")} {...register("description")} />
 
       {getChoices(fieldType)}
-      {fieldType !== "Payment" && (
+      {fieldType !== "Payment" && fieldType !== "Heading" && (
         <Controller name="required" control={control} render={({ field }) => (
           <FormControlLabel control={<Checkbox checked={!!field.value} onChange={(ev) => field.onChange(ev.target.checked)} data-testid="question-required-checkbox" aria-label={Locale.label("forms.formQuestionEdit.questionRequiredAria")} />} label={Locale.label("forms.formQuestionEdit.ansReq")} />
         )} />

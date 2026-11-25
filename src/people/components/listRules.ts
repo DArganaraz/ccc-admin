@@ -1,4 +1,4 @@
-import { type SearchCondition } from "@churchapps/helpers";
+import { type GroupInterface, type SearchCondition } from "@churchapps/helpers";
 import { type ActiveFilter } from "./AdvancedPeopleSearch";
 
 // Mirrors the MembershipApi rules-tree model: provider-scoped conditions a saved List
@@ -22,6 +22,19 @@ export interface ListRuleGroup {
   groups?: ListRuleGroup[];
 }
 
+// Only standard groups carry a human category; a team's categoryName holds its ministry's group id.
+const isStandardGroup = (g: GroupInterface) => (g.tags || "").split(",").includes("standard");
+
+export const getGroupCategories = (groups: GroupInterface[]): string[] =>
+  Array.from(new Set(groups.filter((g) => isStandardGroup(g) && g.categoryName).map((g) => g.categoryName as string))).sort((a, b) => a.localeCompare(b));
+
+export const getGroupIdsForCategory = (groups: GroupInterface[], categoryName: string): string[] =>
+  groups.filter((g) => isStandardGroup(g) && g.categoryName === categoryName).map((g) => g.id || "").filter(Boolean);
+
+// Donation operators: "has donated" and "has not donated", each to any fund or to one fund.
+export const isNotDonatedOperator = (operator: string) => operator === "notDonatedToAny" || operator === "notDonatedTo";
+export const isAnyFundOperator = (operator: string) => operator === "donatedToAny" || operator === "notDonatedToAny";
+
 const attendanceTypeByOperator: Record<string, string> = {
   attendedCampus: "campus",
   attendedService: "service",
@@ -38,6 +51,15 @@ const parseComplexValue = (value: string): [{ value?: string }, { from?: string;
   }
 };
 
+// A category expands to its groups at save time: "is in" any of them, or "is not in" all of them.
+const convertGroupCategory = (filter: ActiveFilter, groups: GroupInterface[]): ListRuleGroup | null => {
+  const notIn = filter.operator === "notIn";
+  const conditions = getGroupIdsForCategory(groups, filter.value).map((id): ListRuleCondition => ({ provider: "group", field: "memberOf", operator: notIn ? "notIn" : "in", entityId: id }));
+  // An empty "all" group matches nobody, so excluding an empty category must add no rule at all.
+  if (notIn && conditions.length === 0) return null;
+  return { match: notIn ? "all" : "any", conditions };
+};
+
 const convertFilter = (filter: ActiveFilter): ListRuleCondition | null => {
   if (!filter.value || filter.value.trim() === "") return null;
   switch (filter.field) {
@@ -46,7 +68,8 @@ const convertFilter = (filter: ActiveFilter): ListRuleCondition | null => {
     case "memberDonations": {
       const [entity, range] = parseComplexValue(filter.value);
       const condition: ListRuleCondition = { provider: "giving", field: "donated", from: range.from, to: range.to };
-      if (filter.operator === "donatedTo" && entity.value && entity.value !== "any") condition.entityId = entity.value;
+      if (!isAnyFundOperator(filter.operator) && entity.value && entity.value !== "any") condition.entityId = entity.value;
+      if (isNotDonatedOperator(filter.operator)) condition.operator = "notIn";
       return condition;
     }
     case "memberAttendance": {
@@ -70,15 +93,21 @@ const convertFilter = (filter: ActiveFilter): ListRuleCondition | null => {
   }
 };
 
-export const buildRulesFromCriteria = (criteria: Record<string, ActiveFilter> | SearchCondition[], match: "all" | "any" | "none" = "all"): ListRuleGroup => {
+export const buildRulesFromCriteria = (criteria: Record<string, ActiveFilter> | SearchCondition[], match: "all" | "any" | "none" = "all", groups: GroupInterface[] = []): ListRuleGroup => {
   const conditions: ListRuleCondition[] = [];
+  const subGroups: ListRuleGroup[] = [];
   if (Array.isArray(criteria)) {
     criteria.forEach((c) => conditions.push({ provider: "person", field: c.field, operator: c.operator, value: c.value }));
   } else {
     Object.values(criteria).forEach((filter) => {
+      if (filter.field === "groupCategory") {
+        const subGroup = filter.value && filter.value.trim() !== "" ? convertGroupCategory(filter, groups) : null;
+        if (subGroup) subGroups.push(subGroup);
+        return;
+      }
       const condition = convertFilter(filter);
       if (condition) conditions.push(condition);
     });
   }
-  return { match, conditions };
+  return subGroups.length > 0 ? { match, conditions, groups: subGroups } : { match, conditions };
 };

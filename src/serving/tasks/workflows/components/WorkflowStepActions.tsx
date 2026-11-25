@@ -11,6 +11,7 @@ import { ACTION_TYPES, SETTABLE_PERSON_FIELDS, type WorkflowStepActionInterface 
 // Gift fields fill in only when a Donation trigger started the workflow, so group texting does not offer them.
 const WORKFLOW_TEXT_MERGE_FIELDS = [
   ...MERGE_FIELD_KEYS,
+  { key: "{{donorNumber}}", label: "tasks.workflowActions.mergeDonorNumber" },
   { key: "{{amount}}", label: "tasks.workflowActions.mergeAmount" },
   { key: "{{giftDate}}", label: "tasks.workflowActions.mergeGiftDate" },
   { key: "{{fund}}", label: "tasks.workflowActions.mergeFund" },
@@ -28,10 +29,35 @@ interface Props {
   saveRef?: React.Ref<() => Promise<void>>;
 }
 
+/** The JSON stored in a step action's `config`; which keys apply depends on the action type. */
+interface WorkflowActionConfig {
+  channel?: string;
+  message?: string;
+  days?: number;
+  templateId?: string;
+  subject?: string;
+  groupId?: string;
+  groupLabel?: string;
+  title?: string;
+  dueDays?: number;
+  description?: string;
+  assignedToType?: string;
+  assignedToId?: string;
+  assignedToLabel?: string;
+  personId?: string;
+  personLabel?: string;
+  workflowId?: string;
+  workflowLabel?: string;
+  note?: string;
+  field?: string;
+  value?: string;
+  url?: string;
+}
+
 export const WorkflowStepActions = (props: Props) => {
   const [actions, setActions] = React.useState<WorkflowStepActionInterface[]>([]);
   const [templates, setTemplates] = React.useState<EmailTemplateInterface[]>([]);
-  const [textingProviders, setTextingProviders] = React.useState<any[] | null>(null);
+  const [textingProviders, setTextingProviders] = React.useState<unknown[] | null>(null);
   const [emailStatus, setEmailStatus] = React.useState<EmailSendStatus | null>(null);
   const [pickerIndex, setPickerIndex] = React.useState<number | null>(null);
   const textRefs = React.useRef<Record<number, HTMLTextAreaElement | null>>({});
@@ -44,18 +70,18 @@ export const WorkflowStepActions = (props: Props) => {
   React.useEffect(() => { load(); }, [load]);
   React.useEffect(() => {
     ApiHelper.get("/emailTemplates", "MessagingApi").then((d: EmailTemplateInterface[]) => setTemplates(d || [])).catch(() => setTemplates([]));
-    ApiHelper.get("/texting/providers", "MessagingApi").then((d: any[]) => setTextingProviders(d || [])).catch(() => setTextingProviders([]));
+    ApiHelper.get("/texting/providers", "MessagingApi").then((d: unknown[]) => setTextingProviders(d || [])).catch(() => setTextingProviders([]));
     ApiHelper.get("/emailTemplates/sendStatus", "MessagingApi").then((d: EmailSendStatus) => setEmailStatus(d || null)).catch(() => setEmailStatus(null));
   }, []);
 
   const emailTemplates = templates.filter(t => t.category !== "Text");
   const textTemplates = templates.filter(t => t.category === "Text");
 
-  const config = (a: WorkflowStepActionInterface): any => {
+  const config = (a: WorkflowStepActionInterface): WorkflowActionConfig => {
     if (!a.config) return {};
     try { return JSON.parse(a.config); } catch { return {}; }
   };
-  const setConfig = (index: number, patch: any) => {
+  const setConfig = (index: number, patch: WorkflowActionConfig) => {
     setActions((prev) => prev.map((a, i) => (i === index ? { ...a, config: JSON.stringify({ ...config(a), ...patch }) } : a)));
   };
   const setType = (index: number, actionType: string) => {
@@ -240,7 +266,7 @@ export const WorkflowStepActions = (props: Props) => {
             <Stack spacing={1}>
               <Stack direction="row" spacing={1} alignItems="center">
                 <Select size="small" value={a.actionType || "delay"} data-testid={"action-type-" + index} onChange={(e) => setType(index, e.target.value)} sx={{ minWidth: 150 }}>
-                  {ACTION_TYPES.filter((t) => props.assignmentConfirmation ? !["sendEmail", "sendText", "addToWorkflow"].includes(t) : t !== "sendAssignmentRequest").map((t) => <MenuItem key={t} value={t}>{t === "sendAssignmentRequest" ? Locale.label("plans.confirmation.sendRequest", "Send serving request") : Locale.label("tasks.workflowActions.type." + t)}</MenuItem>)}
+                  {ACTION_TYPES.filter((t) => props.assignmentConfirmation ? !["sendEmail", "sendText", "addToWorkflow"].includes(t) : t !== "sendAssignmentRequest").map((t) => <MenuItem key={t} value={t}>{Locale.label("tasks.workflowActions.type." + t)}</MenuItem>)}
                 </Select>
                 <Box sx={{ flexGrow: 1 }} />
                 <IconButton size="small" data-testid={"action-delete-" + index} onClick={() => deleteAction(index)}><DeleteIcon fontSize="small" /></IconButton>

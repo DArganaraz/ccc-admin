@@ -1,5 +1,5 @@
 import React, { memo, useCallback, useMemo } from "react";
-import { Box, Link as MuiLink, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
+import { Box, Link as MuiLink, Stack, Table, TableBody, TableCell, TableHead, TableRow, Tooltip, Typography } from "@mui/material";
 import { PillTabs, ResultsBar, StatusBadge, tableScrollSx } from "../../../components/ui";
 import { type GroupMemberInterface, type TaskInterface } from "@churchapps/helpers";
 import { ApiHelper, ArrayHelper, DateHelper, Locale, UserHelper, Loading } from "@churchapps/apphelper";
@@ -7,6 +7,7 @@ import { Link } from "react-router-dom";
 import { NewTask } from "./";
 import UserContext from "../../../UserContext";
 import { useQuery } from "@tanstack/react-query";
+import { newestFirst } from "../taskOrder";
 
 interface Props {
   status: string;
@@ -53,11 +54,11 @@ export const TaskList = memo((props: Props) => {
 
   const assignedToMyGroups = useMemo(() => {
     if (groupIds.length === 0 || !groupTasks.data?.length) return [];
-    return ArrayHelper.getAllArray(groupTasks.data, "assignedToId", groupIds);
+    return [...ArrayHelper.getAllArray(groupTasks.data, "assignedToId", groupIds)].sort(newestFirst);
   }, [groupIds, groupTasks.data]);
 
-  const assignedToMe = useMemo(() => (tasks.data?.length ? ArrayHelper.getAll(tasks.data, "assignedToId", context?.person?.id) : []), [tasks.data, context?.person?.id]);
-  const createdByMe = useMemo(() => (tasks.data?.length ? ArrayHelper.getAll(tasks.data, "createdById", context?.person?.id) : []), [tasks.data, context?.person?.id]);
+  const assignedToMe = useMemo(() => (tasks.data?.length ? [...ArrayHelper.getAll(tasks.data, "assignedToId", context?.person?.id)].sort(newestFirst) : []), [tasks.data, context?.person?.id]);
+  const createdByMe = useMemo(() => (tasks.data?.length ? [...ArrayHelper.getAll(tasks.data, "createdById", context?.person?.id)].sort(newestFirst) : []), [tasks.data, context?.person?.id]);
 
   if (tasks.isLoading || groupMembers.isLoading) return <Loading />;
 
@@ -88,7 +89,9 @@ export const TaskList = memo((props: Props) => {
                 <TableCell sx={{ ...wideCellSx, color: "text.secondary" }}>{task.associatedWithLabel || Locale.label("tasks.taskList.notSpecified")}</TableCell>
                 <TableCell sx={{ ...wideCellSx, color: "text.secondary" }}>{task.assignedToLabel || Locale.label("tasks.taskList.unassigned")}</TableCell>
                 <TableCell sx={{ ...wideCellSx, color: "text.secondary", whiteSpace: "nowrap" }}>
-                  {DateHelper.getDisplayDuration(DateHelper.toDate(task.dateCreated))} {Locale.label("tasks.taskPage.ago")}
+                  <Tooltip title={DateHelper.prettyDateTime(DateHelper.toDate(task.dateCreated))}>
+                    <span>{DateHelper.getDisplayDuration(DateHelper.toDate(task.dateCreated))} {Locale.label("tasks.taskPage.ago")}</span>
+                  </Tooltip>
                   <Typography variant="body2" color="text.secondary">{Locale.label("tasks.taskPage.by")} {task.createdByLabel}</Typography>
                 </TableCell>
                 <TableCell align="right"><StatusBadge tone={task.status === "Open" ? "warning" : "success"}>{task.status}</StatusBadge></TableCell>

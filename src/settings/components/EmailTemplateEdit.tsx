@@ -8,14 +8,19 @@ import { FormCard } from "../../components/ui";
 import { HtmlEditor } from "@churchapps/apphelper/markdown";
 import type { EmailTemplateInterface } from "../EmailTemplatesPage";
 
-// EmailTemplateInterface fields; RHF requires looser typing for nested paths
-type AnyRecord = Record<string, any>;
+interface EmailTemplateFormValues {
+  name: string;
+  subject: string;
+  htmlContent: string;
+  category: string;
+}
 
 const getMergeFields = () => [
   { key: "{{firstName}}", label: Locale.label("settings.emailTemplateEdit.mergeFirstName") },
   { key: "{{lastName}}", label: Locale.label("settings.emailTemplateEdit.mergeLastName") },
   { key: "{{displayName}}", label: Locale.label("settings.emailTemplateEdit.mergeDisplayName") },
   { key: "{{email}}", label: Locale.label("settings.emailTemplateEdit.mergeEmail") },
+  { key: "{{donorNumber}}", label: Locale.label("settings.emailTemplateEdit.mergeDonorNumber") },
   { key: "{{churchName}}", label: Locale.label("settings.emailTemplateEdit.mergeChurchName") },
   { key: "{{amount}}", label: Locale.label("settings.emailTemplateEdit.mergeAmount") },
   { key: "{{giftDate}}", label: Locale.label("settings.emailTemplateEdit.mergeGiftDate") },
@@ -80,7 +85,7 @@ export const EmailTemplateEdit: React.FC<Props> = ({ template, onSave, onCancel,
   const subjectInputRef = React.useRef<HTMLInputElement | null>(null);
   const textInputRef = React.useRef<HTMLTextAreaElement | null>(null);
 
-  const { control, register, handleSubmit, getValues, setValue, watch } = useForm<AnyRecord>({
+  const { control, register, handleSubmit, getValues, setValue, watch } = useForm<EmailTemplateFormValues>({
     defaultValues: {
       name: template.name || "",
       subject: template.subject || "",
@@ -91,7 +96,7 @@ export const EmailTemplateEdit: React.FC<Props> = ({ template, onSave, onCancel,
 
   const { errors } = useFormState({ control });
   const isText = watch("category") === TEXT_CATEGORY;
-  const e = errors as any;
+  const e = errors;
 
   const summaryErrors = React.useMemo(() => {
     const errs: string[] = [];
@@ -101,7 +106,7 @@ export const EmailTemplateEdit: React.FC<Props> = ({ template, onSave, onCancel,
     return errs;
   }, [errors]);
 
-  const onValid = async (values: AnyRecord) => {
+  const onValid = async (values: EmailTemplateFormValues) => {
     const t: EmailTemplateInterface = {
       ...template,
       name: values.name,
@@ -155,6 +160,7 @@ export const EmailTemplateEdit: React.FC<Props> = ({ template, onSave, onCancel,
     preview = preview.replace(/\{\{lastName\}\}/g, "Smith");
     preview = preview.replace(/\{\{displayName\}\}/g, "John Smith");
     preview = preview.replace(/\{\{email\}\}/g, "john@example.com");
+    preview = preview.replace(/\{\{donorNumber\}\}/g, "1042");
     preview = preview.replace(/\{\{churchName\}\}/g, churchName);
     preview = fillSampleGift(preview, SAMPLE_RECEIPT);
 
@@ -171,6 +177,7 @@ export const EmailTemplateEdit: React.FC<Props> = ({ template, onSave, onCancel,
     preview = preview.replace(/\{\{lastName\}\}/g, "Smith");
     preview = preview.replace(/\{\{displayName\}\}/g, "John Smith");
     preview = preview.replace(/\{\{email\}\}/g, "john@example.com");
+    preview = preview.replace(/\{\{donorNumber\}\}/g, "1042");
     preview = preview.replace(/\{\{churchName\}\}/g, churchName);
     return fillSampleGift(preview, "");
   };

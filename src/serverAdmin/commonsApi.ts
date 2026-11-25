@@ -1,10 +1,15 @@
 import { ApiHelper } from "@churchapps/apphelper";
+import type { ApiListType } from "@churchapps/helpers";
 
 // @churchapps/helpers' ApiListType union doesn't know about the commons module yet.
-// Isolate the cast here rather than scattering "as any" through CommonsTab.
+// Isolate the cast here rather than scattering casts through CommonsTab.
+const COMMONS_API: string = "CommonsApi";
+const commonsApiName = COMMONS_API as ApiListType;
+
+// Callers name the response type; it defaults to unknown so an untyped read must be narrowed.
 export const CommonsApi = {
-  get: (path: string): Promise<any> => ApiHelper.get(path, "CommonsApi" as any),
-  post: (path: string, data: any[] | Record<string, unknown> = {}): Promise<any> => ApiHelper.post(path, data, "CommonsApi" as any)
+  get: <T = unknown>(path: string): Promise<T> => ApiHelper.get(path, commonsApiName),
+  post: <T = unknown>(path: string, data: unknown[] | Record<string, unknown> = {}): Promise<T> => ApiHelper.post(path, data, commonsApiName)
 };
 
 export const getWorshipCommonsOrigin = (): string => {

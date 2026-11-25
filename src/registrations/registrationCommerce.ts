@@ -1,4 +1,4 @@
-import { type EventInterface, type RegistrationInterface, type RegistrationMemberInterface } from "@churchapps/helpers";
+import { type EventInterface, type RegistrationInterface, type RegistrationMemberInterface, type RegistrationSelectionChoiceInterface } from "@churchapps/helpers";
 
 // Phase 2 commerce fields live on the Api models but aren't in the published @churchapps/helpers
 // interfaces yet; these local extensions/interfaces cover them until helpers is republished.
@@ -10,10 +10,12 @@ export interface RegistrationTypeInterface {
   name?: string;
   description?: string;
   price?: number | null;
+  // Charged per attendee at checkout instead of the price; the rest is left as a balance.
+  depositAmount?: number | null;
   capacity?: number | null;
-  minAgeYears?: number;
-  maxAgeYears?: number;
-  formId?: string;
+  minAgeYears?: number | null;
+  maxAgeYears?: number | null;
+  formId?: string | null;
   sort?: number;
   active?: boolean;
   remainingCapacity?: number;
@@ -63,16 +65,25 @@ export interface RegistrationPaymentInterface {
   createdDate?: Date | string;
 }
 
-export interface CommerceEventInterface extends Omit<EventInterface, "capacity" | "registrationOpenDate" | "registrationCloseDate"> {
+export interface CommerceEventInterface extends Omit<EventInterface, "capacity" | "registrationOpenDate" | "registrationCloseDate" | "formId"> {
   waitlistEnabled?: boolean;
+  allowSelfCancel?: boolean;
+  allowPayLater?: boolean;
+  // Saved as null to unlink the form.
+  formId?: string | null;
   capacity?: number | null;
   registrationOpenDate?: Date | null;
   registrationCloseDate?: Date | null;
+  // Plain text added to the registration confirmation email.
+  confirmationMessage?: string;
 }
 
 interface CommerceMemberInterface extends RegistrationMemberInterface {
   registrationTypeId?: string;
 }
+
+// A saved selection choice always points at its selection.
+export type LoadedSelectionChoice = RegistrationSelectionChoiceInterface & { selectionId: string };
 
 export interface CommerceRegistrationInterface extends RegistrationInterface {
   totalAmount?: number;
@@ -81,3 +92,17 @@ export interface CommerceRegistrationInterface extends RegistrationInterface {
   waitlistNotifiedDate?: Date;
   members?: CommerceMemberInterface[];
 }
+
+export type OfflinePaymentMethod = "cash" | "check" | "other";
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
+// Mirrors the Api's RegistrationPaymentHelper so the dialog only offers what the server will accept.
+export const isGatewayPayment = (p: RegistrationPaymentInterface) => p.kind !== "refund" && !!p.provider && !!p.transactionId && (p.status || "succeeded") === "succeeded";
+
+export const refundableForPayment = (payment: RegistrationPaymentInterface, payments: RegistrationPaymentInterface[], amountPaid: number) => {
+  const refunded = payments
+    .filter((p) => p.kind === "refund" && !!p.provider && p.transactionId === payment.transactionId && p.status !== "failed")
+    .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+  return Math.max(0, round2(Math.min((Number(payment.amount) || 0) - refunded, Number(amountPaid) || 0)));
+};
